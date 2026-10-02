@@ -1,4 +1,5 @@
 {
   "buildCommand": "pnpm build:all",
-  "outputDirectory": "dist"
+  "outputDirectory": "dist",
+  "cleanUrls": true
 }
