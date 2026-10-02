@@ -6,6 +6,7 @@
 // `if (!IS_HERO)` block, is stripped by Terser — verified via
 // `pnpm build:hero`/`build:canvas` after adding this.
 import { BufferTarget, CanvasSource, getFirstEncodableVideoCodec, Mp4OutputFormat, Output, Quality } from 'mediabunny';
+import { createBatteryStack } from './battery-stack.js';
 
 // --- Config ---------------------------------------------------------------
 
@@ -54,6 +55,13 @@ const IS_SCROLL_ROUTE = canvas?.dataset.scroll === 'true';
 // tree-shaken preview build (mirroring canvas.html) replaces this
 // same-bundle approach.
 const IS_PREVIEW_ROUTE = canvas?.dataset.preview === 'true';
+// battery.html's own data-battery="true" — the same tool as index.html
+// (full panel, same main.tsx/main.js), except startup loads the bundled
+// NGEN battery (loadBundledBatteryModel) with stacking already switched on
+// instead of loadBundledDefaultModel's scene and intro. Flow arrows drawn
+// here are never persisted (see saveModelFlowPath): localStorage is shared
+// with the other routes, whose saved arrows belong to a different model.
+const IS_BATTERY_ROUTE = canvas?.dataset.battery === 'true';
 
 // #scroll-track (scroll.html) is the only thing giving the /scroll route's
 // document real scroll height — see its own CSS comment. Sized dynamically
@@ -313,7 +321,7 @@ function setCubeSizePercent(percent) {
 // per-model extent normalization.
 const LINE_FREQUENCY_MIN = 1;
 const LINE_FREQUENCY_MAX = 60;
-let lineFrequencyValue = restoreNumber('lineFrequency', 11);
+let lineFrequencyValue = restoreNumber('lineFrequency', 40);
 
 function setLineFrequency(value) {
   const clamped = Math.max(LINE_FREQUENCY_MIN, Math.min(LINE_FREQUENCY_MAX, value));
@@ -348,7 +356,7 @@ function setDotSizePercent(value) {
 
 const PLUS_FREQUENCY_MIN = 1;
 const PLUS_FREQUENCY_MAX = 60;
-let plusFrequencyValue = restoreNumber('plusFrequency', 2);
+let plusFrequencyValue = restoreNumber('plusFrequency', 9);
 
 function setPlusFrequency(value) {
   const clamped = Math.max(PLUS_FREQUENCY_MIN, Math.min(PLUS_FREQUENCY_MAX, value));
@@ -2740,8 +2748,12 @@ let defaultCameraView = null; // { offsetX, offsetY, offsetZ, sizePercent } | nu
 // "hand-set once, then baked into source" idea as DEFAULT_MODEL_FLOW_PATH_DATA
 // above, captured via `copy(localStorage.getItem('iconMosaic.defaultCameraView'))`
 // in the console after using "Edit default position" back when this was
-// still localStorage-persisted.
-const BAKED_DEFAULT_CAMERA_VIEW = { offsetX: -5.17360464543138, offsetY: 0, offsetZ: 20.631551421416827, sizePercent: 17.345816691087055 };
+// still localStorage-persisted. sizePercent is 8x its originally-captured
+// value (offsetX/Y/Z are pan percentages of the scale-independent
+// MODEL_POSITION_RANGE, so those didn't need adjusting) — compensates for
+// loadBundledDefaultModel dropping its own former 8x parseObj multiplier,
+// so the on-screen framing this produces is unchanged.
+const BAKED_DEFAULT_CAMERA_VIEW = { offsetX: -5.17360464543138, offsetY: 0, offsetZ: 20.631551421416827, sizePercent: 138.76653352869642 };
 
 // Applies a saved view's pan+zoom (never rotation — see the comment above
 // defaultCameraView's declaration). Shared by goToDefaultCameraView,
@@ -2972,8 +2984,14 @@ function getModelState() {
     modelOffsetX: modelOffsetXPercent,
     modelOffsetY: modelOffsetYPercent,
     customModelReady,
+    cubeSize: cubeSizePercent,
     cubeModelStatus,
-    customModelObjectNames: customModelObjects.map((o) => o.name),
+    batteryStackAvailable: !!batteryStack,
+    batteryStackEnabled,
+    batteryStackCount,
+    batteryStackAnimation,
+    batteryModelLoading,
+    customModelObjectNames: batteryStack?.activeNames ?? customModelObjects.map((o) => o.name),
     cameraTargetSlots,
     cameraTargetActiveIndex,
     showCameraTargetBoxes,
@@ -3233,6 +3251,82 @@ let customModelLineIsGreenCache = null; // one entry per line-position pair — 
 let greenTriPositionsCache = null; // Float32Array, only the triangles flagged green, for cheap raycasting
 let greenTriObjectIndexCache = null; // one entry per green triangle, parallel to greenTriPositionsCache — which object each hit belongs to
 
+let batteryStack = null;
+let batteryStackEnabled = false;
+let batteryStackCount = 9;
+let batteryStackAnimation = true;
+let batteryModelLoading = false;
+
+function configureBatteryStack(count = batteryStackCount, enabled = batteryStackEnabled, animation = batteryStackAnimation, replay = false) {
+  if (!batteryStack) return;
+  if (!Number.isInteger(count) || count < 3 || count > 9) return;
+  batteryStackCount = count;
+  batteryStackEnabled = !!enabled;
+  batteryStackAnimation = !!animation;
+  const shouldAnimate = batteryStackAnimation && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  batteryStack.configure(count, batteryStackEnabled, shouldAnimate, performance.now(), replay);
+  clearModelFlowPath();
+  updateBatteryStackGeometry();
+  notifyModelState();
+}
+
+function updateBatteryStackGeometry() {
+  const geometry = batteryStack?.update(performance.now());
+  if (!geometry) return;
+  const upload = (buffer, values) => {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, values, gl.DYNAMIC_DRAW);
+  };
+  upload(customModelPositionBuffer, geometry.positions);
+  upload(customModelLineBuffer, geometry.linePositions);
+  if (geometry.membershipChanged) {
+    upload(customModelNormalBuffer, geometry.normals);
+    upload(customModelColorBuffer, geometry.colors);
+    upload(customModelIsGreenBuffer, geometry.isGreen);
+    upload(customModelFillPatternBuffer, geometry.fillPattern);
+    customModelLineIsGreenCache = geometry.lineIsGreen;
+    refreshBlueprintLineColors();
+  }
+  customModelVertexCount = geometry.positions.length / 3;
+  customModelLineVertexCount = geometry.linePositions.length / 3;
+  customModelPositionsCache = geometry.positions;
+  customModelObjectIndexCache = geometry.objectIndex;
+  customModelIsGreenCache = geometry.isGreen;
+  customModelLinePositionsCache = geometry.linePositions;
+  customModelObjects = geometry.objects;
+  const triangles = [], owners = [];
+  for (let i = 0; i < geometry.isGreen.length; i += 3) {
+    if (!geometry.isGreen[i]) continue;
+    triangles.push(...geometry.positions.subarray(i * 3, i * 3 + 9));
+    owners.push(geometry.objectIndex[i]);
+  }
+  greenTriPositionsCache = new Float32Array(triangles);
+  greenTriObjectIndexCache = owners;
+  if (geometry.membershipChanged) recomputeModelFlowCoords();
+}
+
+async function loadBundledBatteryModel() {
+  if (batteryModelLoading) return;
+  batteryModelLoading = true;
+  notifyModelState();
+  try {
+    const [objText, mtlText] = await Promise.all(['obj', 'mtl'].map(async extension => {
+      const response = await fetch(`/models/NGEN_assets.${extension}`);
+      if (!response.ok) throw new Error(`Battery ${extension} file is unavailable.`);
+      return response.text();
+    }));
+    applyParsedModel(parseObj(objText, parseMtl(mtlText)), 'NGEN_assets.obj', 'NGEN_assets.mtl');
+    clearModelFlowPath();
+    if (IS_BATTERY_ROUTE) configureBatteryStack(batteryStackCount, true);
+  } catch (error) {
+    console.error(error);
+    cubeModelStatus = "Couldn't load NGEN_assets.obj";
+  } finally {
+    batteryModelLoading = false;
+    notifyModelState();
+  }
+}
+
 // Uploads an already-parsed model (see parseObj) to the custom-model GPU
 // buffers and flips customModelReady on so renderCubeFrame starts drawing
 // it. Shared by the file picker and drag-and-drop paths (see
@@ -3244,6 +3338,9 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = []) {
     notifyModelState();
     return;
   }
+  batteryStack = createBatteryStack(parsed);
+  batteryStackEnabled = false;
+  batteryStackCount = 9;
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelPositionBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, parsed.positions, gl.STATIC_DRAW);
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelNormalBuffer);
@@ -3337,6 +3434,27 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = []) {
   cubeModelStatus = parsed.hasMaterials
     ? `${objName} (${triCount} tris, colors from ${mtlName})`
     : `${objName} (${triCount} tris, no materials found)`;
+  if (batteryStack) {
+    // Frame this newly added asset without changing the default scene or camera.
+    resetCameraTarget();
+    settleCameraTargetSpring();
+    const bounds = {
+      minX: Math.min(...parsed.objects.map(object => object.bounds.minX)),
+      maxX: Math.max(...parsed.objects.map(object => object.bounds.maxX)),
+      minY: Math.min(...parsed.objects.map(object => object.bounds.minY)),
+      maxY: Math.max(...parsed.objects.map(object => object.bounds.maxY)),
+      minZ: Math.min(...parsed.objects.map(object => object.bounds.minZ)),
+      maxZ: Math.max(...parsed.objects.map(object => object.bounds.maxZ)),
+    };
+    const center = [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2, (bounds.minZ + bounds.maxZ) / 2];
+    const { zoomGoal } = computeCameraTargetGoalForObject({ center, bounds });
+    setCubeSizePercent(zoomGoal * 100);
+    const scale = CUBE_SCALE * cubeSizeScale;
+    modelOffsetXPercent = -center[0] * scale / MODEL_POSITION_RANGE * 100;
+    modelOffsetYPercent = -center[1] * scale / MODEL_POSITION_RANGE * 100;
+    modelOffsetZPercent = -center[2] * scale / MODEL_POSITION_RANGE * 100;
+    resetCubeRotation();
+  }
   notifyModelState();
 }
 
@@ -3460,9 +3578,16 @@ async function loadBundledDefaultModel() {
       fetch('/models/sg_connect_scroll_explainer.mtl').then((r) => r.text()),
     ]);
     const materials = parseMtl(mtlText);
-    // On top of parseObj's usual extent normalization — 8x, independent of
-    // the "Model size" slider, which still starts at its usual 100%.
-    const parsed = parseObj(objText, materials, 8);
+    // Same extent normalization a manually dropped/uploaded model gets
+    // (see loadModelFromFiles's own parseObj call) — no extra multiplier —
+    // so the bundled default model isn't a different absolute physical size
+    // than the same file would be if the user dragged it in themselves.
+    // BAKED_DEFAULT_CAMERA_VIEW's sizePercent below is scaled up 8x to
+    // compensate and keep the same on-screen framing this used to produce
+    // at the old 8x-larger object-space scale; Camera Targets need no such
+    // compensation since their own "frame to fit" zoom is computed fresh
+    // from the model's actual (now 1x) bounds every time.
+    const parsed = parseObj(objText, materials);
     // No defaultCameraTargets array needed here — this model already names
     // its own marker objects Target_1/Target_2/Target_3/Target_4 (each on
     // the invisible "Target" material, see isTargetMaterial), so
@@ -3638,7 +3763,7 @@ const MODEL_FLOW_STORAGE_KEY = 'iconMosaic.modelFlowPath';
 // timing, see buildModelFlowPathsFromData), just applied unconditionally on
 // startup instead. Specific to the bundled model's geometry/scale — re-capture
 // and replace if the model ever changes again.
-const DEFAULT_MODEL_FLOW_PATH_DATA = [{"points":[[-3.638244250341998,0.18667866289617052,4.63795967847733],[1.030863656776127,0.1866786628961421,4.629312405162665],[1.045934677123995,0.9683643833215179,4.62199527009335]],"touchedObjectIndices":[39],"enabledObjectIndices":[39],"sourceOffset":0,"masterTotalLen":5.4509811469661225},{"points":[[1.0459306240081787,1.2738937639339838,4.414235479699798],[1.0459306240081787,1.269945146483309,4.250002070418635],[1.0280788024849414,0.1866786628961421,4.245310190867352],[-0.2622834147244788,0.18667866289617052,4.253390702729575],[-0.263043203899457,0.18667866289617052,1.2986092230271566]],"touchedObjectIndices":[38],"enabledObjectIndices":[38],"sourceOffset":0,"masterTotalLen":5.492873694044112},{"points":[[1.0459346771240376,1.2676289306586455,4.858531121684365],[1.0459346771240092,1.26662199657126,6.347898192320372],[1.045235482523296,0.5600119829177856,6.341217711499567],[0.8180378927734164,0.5600119829177856,6.358790022023271]],"touchedObjectIndices":[37],"enabledObjectIndices":[37],"sourceOffset":0,"masterTotalLen":2.4238854799853495},{"points":[[1.736335670632613,2.5115073440370708,4.022709926716956],[1.7359487599655097,2.511313882418733,4.626719075380876],[1.0578712240059787,2.152598492850103,4.627678503481647],[1.0459346771240092,1.5658075598685315,4.622156262030117]],"touchedObjectIndices":[40],"enabledObjectIndices":[40],"sourceOffset":0,"masterTotalLen":1.9580635045647528},{"points":[[-3.146667209447486,1.4660096786199972,-11.597534737840249],[-3.3246360199095477,0.1889258605837938,-11.595726966857882],[-4.3663062906906305,0.20181199908259373,-11.613808421360517],[-4.335787660019292,0.20181199908253689,4.62461341241999],[-4.015497280000176,0.2018119990825653,4.629549905958669]],"touchedObjectIndices":[35],"enabledObjectIndices":[35],"sourceOffset":0,"masterTotalLen":18.890111746802464}];
+const DEFAULT_MODEL_FLOW_PATH_DATA = [{"points":[[2.9193208411913467,0.3450483466730212,0.6807763727238205],[2.920140044189356,0.345457959349897,0.7635828152373607],[2.831728841714245,0.3012523481509035,0.7617691417902384],[2.8273479672802537,0.2978634770865014,0.7632343634131069],[2.8243567943573,0.21762156264267318,0.763172484136307]],"touchedObjectIndices":[290],"enabledObjectIndices":[290],"sourceOffset":0,"masterTotalLen":0.26770171824033},{"points":[[2.8243560791015625,0.17225761710876597,0.7315663648890101],[2.824356079101566,0.17317488650298074,0.7121198791925596],[2.8243560791015625,0.027922332357467994,0.7121003349860455],[2.6412663050652228,0.025641715154048228,0.7112586275687125],[2.641338720328406,0.025641715154055333,0.30847663917537815]],"touchedObjectIndices":[281],"enabledObjectIndices":[281],"sourceOffset":0,"masterTotalLen":0.7506085694272375},{"points":[[2.179713677649727,0.025641715154055333,0.76510943477723],[2.8231795130468864,0.025641715154055333,0.762294748322395],[2.8243567943572963,0.13271278534180997,0.76448478403832]],"touchedObjectIndices":[286],"enabledObjectIndices":[286],"sourceOffset":0,"masterTotalLen":0.7505719275811688},{"points":[[2.7927913274351943,0.0769233107566798,1.0027242639323681],[2.8233749713963,0.0769233107566869,1.0014170361237582],[2.8243567943573,0.17617733219321252,1.0015159477265954],[2.8243567943573034,0.17417924250182182,0.7928369420709132]],"touchedObjectIndices":[276],"enabledObjectIndices":[276],"sourceOffset":0,"masterTotalLen":0.3385590663841229},{"points":[[2.249643507504757,0.13568516288468402,-1.4674314188739253],[2.228429990926305,0.02533801268207725,-1.4650859789525796],[2.0815684795379674,0.025324682875293547,-1.4661642310223506],[2.0851854091261828,0.025513144209977412,0.7600910991531578],[2.1358722223005593,0.025513144209984517,0.7648541776115643]],"touchedObjectIndices":[267],"enabledObjectIndices":[267],"sourceOffset":0,"masterTotalLen":2.536426068669501},{"points":[[6.421203271720733,1.3649130958472284,-1.1827020511365305],[2.4513610250754514,1.3681475905041651,-1.1865082921635377]],"touchedObjectIndices":[195],"enabledObjectIndices":[195],"sourceOffset":0,"masterTotalLen":3.969845389014049},{"points":[[6.417725351802733,1.0903076890805323,-1.1831838825033785],[2.45740796979761,1.0915539113993304,-1.1851533834749048]],"touchedObjectIndices":[192,191],"enabledObjectIndices":[192,191],"sourceOffset":0,"masterTotalLen":3.960318067809207},{"points":[[6.4162532939121455,0.8170069949419201,-1.184840293862429],[2.4502449940134277,0.8168324060597882,-1.1848614897615093]],"touchedObjectIndices":[187],"enabledObjectIndices":[187],"sourceOffset":0,"masterTotalLen":3.966008303798173},{"points":[[6.403309893632118,0.8161586120980928,-1.7490164659021303],[2.475109187920976,0.8134537726634079,-1.74721371511378]],"touchedObjectIndices":[199],"enabledObjectIndices":[199],"sourceOffset":0,"masterTotalLen":3.9282020506099595},{"points":[[6.406167008663138,1.092914674866833,-1.7511773085437383],[2.4746065111725164,1.0899873564952145,-1.74884174856129]],"touchedObjectIndices":[203],"enabledObjectIndices":[203],"sourceOffset":0,"masterTotalLen":3.931562281010182},{"points":[[6.420001530148442,1.3649901266430788,-1.747055980944694],[2.4617695927127317,1.3646300066159682,-1.7478329066869094]],"touchedObjectIndices":[208,207],"enabledObjectIndices":[208,207],"sourceOffset":0,"masterTotalLen":3.958232030065455},{"points":[[-7.259464823921391,0.8264391790253285,-3.9514793189036985],[-7.2576988530541655,0.8276633270421598,0.006732973637443851]],"touchedObjectIndices":[201],"enabledObjectIndices":[201],"sourceOffset":0,"masterTotalLen":3.95821287578312},{"points":[[-7.255482562753031,1.1053542423735365,-3.952383955973123],[-7.260189157176946,1.1000208285077093,0.006495491217888838]],"touchedObjectIndices":[205],"enabledObjectIndices":[205],"sourceOffset":0,"masterTotalLen":3.9588858375464615},{"points":[[-7.259581812925482,1.375652664900045,-3.9451497935696818],[-7.255006918623415,1.38073269744757,0.017184688420707195]],"touchedObjectIndices":[209,210],"enabledObjectIndices":[209,210],"sourceOffset":0,"masterTotalLen":3.962340379568444},{"points":[[-6.692540768152313,1.3786185382302563,-3.9470147073243567],[-6.6928029750615465,1.3785760583205189,0.014616207207813314]],"touchedObjectIndices":[197],"enabledObjectIndices":[197],"sourceOffset":0,"masterTotalLen":3.961630923437215},{"points":[[-6.693624718167371,1.102253895537487,-3.9405482423844065],[-6.693015100541544,1.1025763281267729,-0.0004402189248828847]],"touchedObjectIndices":[193,194],"enabledObjectIndices":[193,194],"sourceOffset":0,"masterTotalLen":3.9401080838127447},{"points":[[-6.6905426343303205,0.8297677556671914,-3.9294216423537947],[-6.691525641360684,0.8296138368386892,0.00630375648084569]],"touchedObjectIndices":[189],"enabledObjectIndices":[189],"sourceOffset":0,"masterTotalLen":3.935725524604824},{"points":[[-6.972605409303895,0.14712809931605975,0.21547474016745838],[-6.969792772275859,0.03811296234210104,0.2361383225688094],[-6.97091310360914,0.03828848898410797,0.3830082831212458],[-6.362797007257534,0.03828848898410797,0.3782981863323158],[-6.3628195327074195,0.03828848898410442,0.23726290723212173]],"touchedObjectIndices":[268],"enabledObjectIndices":[268],"sourceOffset":0,"masterTotalLen":1.0070358236067254},{"points":[[-6.331820531669813,0.038288488984111524,0.2362584495725244],[-6.333049522671184,0.038288488984111524,0.5343361258826249],[-6.01420150516388,0.038288306444879794,0.5312573466036987]],"touchedObjectIndices":[269],"enabledObjectIndices":[269],"sourceOffset":0,"masterTotalLen":2.992862387445121},{"points":[[-6.01420150516388,0.038288306444879794,0.5312573466036987],[-5.913842311146524,0.03828830644488335,0.531495919083131]],"touchedObjectIndices":[269],"enabledObjectIndices":[269],"sourceOffset":0.6169430913231151,"masterTotalLen":2.992862387445121},{"points":[[-6.01420150516388,0.038288306444879794,0.5312573466036987],[-6.021771401814939,0.03828830644489045,-1.745832139178301],[-5.922955963843495,0.03828830644489045,-1.7452373896975928]],"touchedObjectIndices":[269],"enabledObjectIndices":[269],"sourceOffset":0.6169430913231151,"masterTotalLen":2.992862387445121},{"points":[[-5.7197148529759385,0.03828830644487624,-1.746089194158916],[-5.529495901506156,0.03828830644488335,-1.744652538730449]],"touchedObjectIndices":[374],"enabledObjectIndices":[374],"sourceOffset":0,"masterTotalLen":0.19022437666367503},{"points":[[-5.328778877971166,0.03828830644488335,-1.7440146141339987],[-5.150774034945618,0.03828830644488335,-1.7432520414106278]],"touchedObjectIndices":[373],"enabledObjectIndices":[373],"sourceOffset":0,"masterTotalLen":0.17800647644877501},{"points":[[-5.711766393549908,0.038288306444879794,0.5308282376716633],[-5.535274391428835,0.03828830644488335,0.5314829470231253]],"touchedObjectIndices":[371],"enabledObjectIndices":[371],"sourceOffset":0,"masterTotalLen":0.17649321646182223},{"points":[[-5.327331129779817,0.0382883064448869,0.5302478279888803],[-5.149750599759948,0.03828830644488335,0.530641906502126]],"touchedObjectIndices":[372],"enabledObjectIndices":[372],"sourceOffset":0,"masterTotalLen":0.1775809672797513},{"points":[[-0.462270931282422,0.35478723725054095,0.32368792867420426],[-0.46389842978493334,0.3539734657925955,0.40776601322515127],[-0.554541473553833,0.30841575021379697,0.4055771691279175],[-0.558397650718689,0.22490972772847684,0.40468492887138474]],"touchedObjectIndices":[294],"enabledObjectIndices":[294],"sourceOffset":0,"masterTotalLen":0.269169008107442},{"points":[[-0.8787762818350029,0.03479950875043514,0.4067966178320752],[-0.5610170264249916,0.03479932621121051,0.4053239291488282],[-0.558397650718689,0.138655320233942,0.40562472448252507]],"touchedObjectIndices":[289],"enabledObjectIndices":[289],"sourceOffset":0,"masterTotalLen":0.4216521242177545},{"points":[[-0.5583980083465576,0.18189131232486133,0.3737903461002057],[-0.5583980083465576,0.18340023287234786,0.3531567313295398],[-0.5583980083465576,0.03720825825165264,0.35341587720412054],[-0.7385454038963761,0.03479950875044224,0.3533754307082635],[-0.7384115618870588,0.03479950875043514,-0.04985344575668549]],"touchedObjectIndices":[284],"enabledObjectIndices":[284],"sourceOffset":0,"masterTotalLen":0.7502733203488117},{"points":[[-0.5583976507186872,0.18548004858528344,0.4367081796394441],[-0.5583976507186907,0.18300103645908194,0.6444739789638163],[-0.5583976507186872,0.08702161625780391,0.6431372552710037],[-0.5905975408468174,0.08608092367649078,0.6442015739789149]],"touchedObjectIndices":[279],"enabledObjectIndices":[279],"sourceOffset":0,"masterTotalLen":0.33600052183592033},{"points":[[-2.792728062617666,0.35291716980972865,0.2243392418203669],[-2.7091733231336335,0.3530761091091499,0.22402137261885713],[-2.7123292488607627,0.3082751995567321,0.31362318571966696],[-2.713060234033562,0.30257338052860305,0.31799816732996433],[-2.712362809124251,0.22353525623535475,0.3189086318016052]],"touchedObjectIndices":[293],"enabledObjectIndices":[293],"sourceOffset":0,"masterTotalLen":0.27005346876917313},{"points":[[-2.7413183833607526,0.18077285075371208,0.31890916824341176],[-2.7638359678451296,0.18302360345870738,0.31890916824341176],[-2.7629700486283912,0.04058248055271818,0.3189091682434082],[-2.7633067676188285,0.03370794281363487,0.500874885791891],[-3.166851696245338,0.03370794281363487,0.5016284498284307]],"touchedObjectIndices":[283],"enabledObjectIndices":[283],"sourceOffset":0,"masterTotalLen":0.7507150195816545},{"points":[[-2.711427545723472,0.03370794281363487,0.6390487353904148],[-2.7115160438664336,0.03370794281363487,0.3208953518927036],[-2.712492905203458,0.1377524743540084,0.3189086318016088]],"touchedObjectIndices":[288],"enabledObjectIndices":[288],"sourceOffset":0,"masterTotalLen":0.4222214786089038},{"points":[[-2.683224113915377,0.18012531197184245,0.3189086318016052],[-2.4720779479255777,0.18278827465548275,0.3189086318016088],[-2.4744668252343747,0.08498954027891514,0.3191314130636602],[-2.473629625037546,0.08498954027891159,0.35091903145715475]],"touchedObjectIndices":[278],"enabledObjectIndices":[278],"sourceOffset":0,"masterTotalLen":0.34078975877126944},{"points":[[-0.9356327481054336,0.3619528166520567,-2.4953165165354],[-0.8548101415690175,0.36209371208109786,-2.4955982868876703],[-0.8532338177039627,0.3154838908878652,-2.4035450334313495],[-0.8553209542390112,0.23119744454981728,-2.4000005722045934]],"touchedObjectIndices":[292],"enabledObjectIndices":[292],"sourceOffset":0,"masterTotalLen":0.26840281272620264},{"points":[[-0.8833552579205279,0.19099855505973906,-2.399999856948856],[-0.9064407824348437,0.19341424679388908,-2.399999856948856],[-0.9059425047951959,0.04269165351604798,-2.399999856948856],[-0.906081065133618,0.042370319366451525,-2.2178971172485547],[-1.305766141676278,0.04023528811884525,-2.2155969142913783]],"touchedObjectIndices":[282],"enabledObjectIndices":[282],"sourceOffset":0,"masterTotalLen":0.755735461079476},{"points":[[-0.8509288021777266,0.04237031936645508,-2.0806504824320653],[-0.8536248699569473,0.042631783311144034,-2.4000003337860107],[-0.8541336592365703,0.14725451641750942,-2.400000333786007]],"touchedObjectIndices":[287],"enabledObjectIndices":[287],"sourceOffset":0,"masterTotalLen":0.4239853090176636},{"points":[[-0.8259317484142148,0.1898956750916163,-2.4000005722045934],[-0.6165747432970328,0.1913945494244711,-2.4000005722045863],[-0.6146920552617345,0.0937650237952532,-2.400000572204588],[-0.6170739368645926,0.09365192055702565,-2.368652439764817]],"touchedObjectIndices":[277],"enabledObjectIndices":[277],"sourceOffset":0,"masterTotalLen":0.3384487426668632},{"points":[[-3.9436116672438537,0.35402838106542234,-3.7054272430527746],[-3.9426847115493615,0.35449185891267376,-3.624031511327134],[-4.031114179299372,0.3102771846423025,-3.623098851401724],[-4.038219451904297,0.23104646331603362,-3.6224566997657837]],"touchedObjectIndices":[291],"enabledObjectIndices":[291],"sourceOffset":0,"masterTotalLen":0.2598251214988603},{"points":[[-4.038220882415775,0.184308511985801,-3.654389738731903],[-4.0382208824157715,0.18359249779317466,-3.6765965357968358],[-4.038220882415775,0.03516462927424513,-3.6761267544130836],[-4.219410238584899,0.03479969128965976,-3.675777273328257],[-4.219888568666491,0.034799691289663315,-4.077374649948439]],"touchedObjectIndices":[280],"enabledObjectIndices":[280],"sourceOffset":0,"masterTotalLen":0.753434671461332},{"points":[[-4.357849640830646,0.031154260810406953,-3.6202764511108363],[-4.039656489178178,0.03479969128965976,-3.620999523454282],[-4.038220405578617,0.1414591293066474,-3.6227831268869455]],"touchedObjectIndices":[285],"enabledObjectIndices":[285],"sourceOffset":0,"masterTotalLen":0.42489887082555344},{"points":[[-4.070202383124194,0.08608128875494003,-3.3844415774140053],[-4.038383136639382,0.08608128875494003,-3.384474633267244],[-4.038220405578615,0.18273584985980662,-3.384748514564995],[-4.038220405578613,0.1853599071652816,-3.593399799445046]],"touchedObjectIndices":[275],"enabledObjectIndices":[275],"sourceOffset":0,"masterTotalLen":0.33714213445416474},{"points":[[-3.1651170993245614,0.8006025679609436,-1.62803316116333],[-3.1644245908198556,0.8283831499268963,-1.62803316116333],[-3.1280345333075967,0.8292234539985657,-1.629305023702969],[-3.1279126941045323,0.5424314205647462,-1.6280331611633265],[-2.7497409265515937,0.5432774424552917,-1.6314943895831284],[-2.750350238734047,0.5432774424552917,-1.545180933320598],[-2.7499241633031595,0.583151638507843,-1.5418964227066372],[-2.7500955160739906,0.583151638507843,-1.5110230937898699],[-2.7493908306966546,0.22892677413628348,-1.5070822238922084]],"touchedObjectIndices":[30],"enabledObjectIndices":[30],"sourceOffset":0,"masterTotalLen":1.240643025599736},{"points":[[-2.4426329135894775,0.030264412469762192,-1.015135657830097],[-2.4426329135894775,0.031375997800147104,-1.337905529771433],[-2.751660342962058,0.032496966421604156,-1.3390602359549924],[-2.7492949813288217,0.035312147223244494,-1.5069890022277868],[-2.7476215230551375,0.13339069183559715,-1.5069890022277797]],"touchedObjectIndices":[302],"enabledObjectIndices":[302],"sourceOffset":0,"masterTotalLen":0.8978652431533579},{"points":[[-2.7719343547967954,0.13539441998002388,-1.5069890022277797],[-2.771406689556091,0.0352149140221929,-1.5069890022277797],[-2.772617871080115,0.03243176266551018,-1.280556921005745]],"touchedObjectIndices":[256],"enabledObjectIndices":[256],"sourceOffset":0,"masterTotalLen":1.2485819969225629},{"points":[[-2.772617871080115,0.03243176266551018,-1.280556921005745],[-2.7703815664804026,0.03243176266551373,-1.1449915433419862]],"touchedObjectIndices":[256],"enabledObjectIndices":[256],"sourceOffset":0.32663331952550523,"masterTotalLen":1.2485819969225629},{"points":[[-2.772617871080115,0.03243176266551018,-1.280556921005745],[-3.164239512023519,0.03243176266551018,-1.2814361666074512]],"touchedObjectIndices":[256],"enabledObjectIndices":[256],"sourceOffset":0.32663331952550523,"masterTotalLen":1.2485819969225629},{"points":[[-3.164239512023519,0.03243176266551018,-1.2814361666074512],[-3.164352854992119,0.03243176266551018,-1.1423247955053824]],"touchedObjectIndices":[256],"enabledObjectIndices":[256],"sourceOffset":0.7182559474826146,"masterTotalLen":1.2485819969225629},{"points":[[-3.164239512023519,0.03243176266551018,-1.2814361666074512],[-3.5555357440031035,0.03243176266551373,-1.2836172017833216],[-3.5566299445412675,0.032431762665506625,-1.1445977687566118]],"touchedObjectIndices":[256],"enabledObjectIndices":[256],"sourceOffset":0.7182559474826146,"masterTotalLen":1.2485819969225629},{"points":[[-2.4893055278466463,0.03209239427994781,-1.8293642997741717],[-2.450103347250751,0.032496966421604156,-1.8327251395953184],[-2.4469041460286025,0.032496966421604156,-1.7064728651214658]],"touchedObjectIndices":[186],"enabledObjectIndices":[186],"sourceOffset":0,"masterTotalLen":0.9781444834150789},{"points":[[-2.4469041460286025,0.032496966421604156,-1.7064728651214658],[-2.4881428431236454,0.032496966421600604,-1.7073853736881492]],"touchedObjectIndices":[186],"enabledObjectIndices":[186],"sourceOffset":0.1656408622212007,"masterTotalLen":0.9781444834150789},{"points":[[-2.4469041460286025,0.032496966421604156,-1.7064728651214658],[-2.447022871897623,0.03249696642160771,-1.5839715861893957]],"touchedObjectIndices":[186],"enabledObjectIndices":[186],"sourceOffset":0.1656408622212007,"masterTotalLen":0.9781444834150789},{"points":[[-2.447022871897623,0.03249696642160771,-1.5839715861893957],[-2.4901167071967265,0.032496966421604156,-1.5834954364840694]],"touchedObjectIndices":[186],"enabledObjectIndices":[186],"sourceOffset":0.2881421986866647,"masterTotalLen":0.9781444834150789},{"points":[[-2.447022871897623,0.03249696642160771,-1.5839715861893957],[-2.445136010842889,0.03249696642160238,-1.3935241014601072],[-2.7278849064602078,0.032496966421600604,-1.393327362128689],[-2.7289329359223053,0.034142354702291655,-1.5069890022277814],[-2.726166367574212,0.13722334475188447,-1.506989002227785]],"touchedObjectIndices":[186],"enabledObjectIndices":[186],"sourceOffset":0.2881421986866647,"masterTotalLen":0.9781444834150789},{"points":[[-1.3599698673636382,0.7961975336074829,-4.262721513612154],[-1.3560040882418534,0.8303149938583374,-4.259377518174784],[-1.357296910201292,0.8303149938583374,-4.226610865913358],[-1.356117302374372,0.5538302992816213,-4.221238136291504],[-1.355983676642623,0.5443689823150599,-3.8520221725774135],[-1.4432653282087777,0.5443689823150635,-3.8481853400986665],[-1.445828453810261,0.5842431783676147,-3.8426357326483966],[-1.4778348462420983,0.5842431783676147,-3.8447463213737905],[-1.479634404182434,0.23467153744490687,-3.8459099434085786]],"touchedObjectIndices":[33,29],"enabledObjectIndices":[33,29],"sourceOffset":0,"masterTotalLen":1.2225384269823603},{"points":[[-1.1531189716717822,0.03358853235841508,-3.5804823722331918],[-1.1542463829450131,0.03358853235841153,-3.538464853767554],[-1.280149185208149,0.033588532358407974,-3.541500262778481]],"touchedObjectIndices":[185],"enabledObjectIndices":[185],"sourceOffset":0,"masterTotalLen":0.9779511506900345},{"points":[[-1.280149185208149,0.033588532358407974,-3.541500262778481],[-1.2776621034608269,0.03358853235840087,-3.579882777551081]],"touchedObjectIndices":[185],"enabledObjectIndices":[185],"sourceOffset":0.16797202856329982,"masterTotalLen":0.9779511506900345},{"points":[[-1.280149185208149,0.033588532358407974,-3.541500262778481],[-1.4031512663417853,0.03358853235841153,-3.541534488362707]],"touchedObjectIndices":[185],"enabledObjectIndices":[185],"sourceOffset":0.16797202856329982,"masterTotalLen":0.9779511506900345},{"points":[[-1.4031512663417853,0.03358853235841153,-3.541534488362707],[-1.4003929310067207,0.03358853235841153,-3.582564053292458]],"touchedObjectIndices":[185],"enabledObjectIndices":[185],"sourceOffset":0.29097411445860594,"masterTotalLen":0.9779511506900345},{"points":[[-1.4031512663417853,0.03358853235841153,-3.541534488362707],[-1.5921370191875521,0.03358853235840442,-3.541651163713695],[-1.5931758769800108,0.03358853235841153,-3.8209515594478702],[-1.4819012920039576,0.033588532358407974,-3.8241733920555916],[-1.476890350938934,0.1407799396565066,-3.8206074237823415]],"touchedObjectIndices":[185],"enabledObjectIndices":[185],"sourceOffset":0.29097411445860594,"masterTotalLen":0.9779511506900345},{"points":[[-1.966185706273345,0.03319435581740393,-3.537832736968994],[-1.649277913031602,0.03358853235841508,-3.5400669554512874],[-1.6486690242363338,0.03358853235840442,-3.8438230784677003],[-1.480387064430932,0.033588532358407974,-3.8447666257733832],[-1.4797276258468628,0.13443458782275997,-3.8444245768655865]],"touchedObjectIndices":[301],"enabledObjectIndices":[301],"sourceOffset":0,"masterTotalLen":0.8898060438039553},{"points":[[-1.4797276258468628,0.1288685291988756,-3.8639325482393705],[-1.4806110041116725,0.03352332860231755,-3.866337149981204],[-1.7055894501240516,0.0335233286023211,-3.8687115599179673]],"touchedObjectIndices":[255],"enabledObjectIndices":[255],"sourceOffset":0,"masterTotalLen":1.2437352463246638},{"points":[[-1.7055894501240516,0.0335233286023211,-3.8687115599179673],[-1.8341407386625055,0.033523328602313995,-3.866675561287945]],"touchedObjectIndices":[255],"enabledObjectIndices":[255],"sourceOffset":0.32037058399399976,"masterTotalLen":1.2437352463246638},{"points":[[-1.7055894501240516,0.0335233286023211,-3.8687115599179673],[-1.7038661316375459,0.033523328602313995,-4.261168419206779]],"touchedObjectIndices":[255],"enabledObjectIndices":[255],"sourceOffset":0.32037058399399976,"masterTotalLen":1.2437352463246638},{"points":[[-1.7038661316375459,0.033523328602313995,-4.261168419206779],[-1.8312136174895608,0.0335233286023211,-4.258000194500129]],"touchedObjectIndices":[255],"enabledObjectIndices":[255],"sourceOffset":0.7128312268990484,"masterTotalLen":1.2437352463246638},{"points":[[-1.7038661316375459,0.033523328602313995,-4.261168419206779],[-1.7034569435811586,0.033523328602313995,-4.6512968865427915],[-1.8441554528619828,0.03284347604660098,-4.6466965675354]],"touchedObjectIndices":[255],"enabledObjectIndices":[255],"sourceOffset":0.7128312268990484,"masterTotalLen":1.2437352463246638}];
 const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of each path's own normalized (0-1) length
 // Fixed reference length (world units) the head's, tail's, and core's reach
 // are all computed against instead of each arrow's own masterTotalLen, so
@@ -4420,6 +4545,7 @@ function recomputeModelFlowCoords() {
 }
 
 function saveModelFlowPath() {
+  if (IS_BATTERY_ROUTE) return;
   if (modelFlowPaths.length > 0) {
     localStorage.setItem(
       MODEL_FLOW_STORAGE_KEY,
@@ -5097,6 +5223,7 @@ function drawAxisGizmo(rx, ry) {
 let scrollLastNotifiedTargetIndex = null;
 
 function renderCubeFrame() {
+  updateBatteryStackGeometry();
   gl.viewport(0, 0, canvas.width, canvas.height);
   // Clear alpha is 0 instead of the usual 1 while capturePhoto is mid-export
   // (see capturingTransparentPhoto) — the PNG then carries a true alpha
@@ -5480,7 +5607,15 @@ function renderCubeFrame() {
   let flowWorldPos = 0;
   let flowPulseDensity = 0;
   if (flowActive) {
-    flowSigma = Math.max(0.02, MODEL_FLOW_PULSE_BAND_FRACTION * pulseBandFraction * 4);
+    // Floored at a tiny epsilon (not 0.02 as before) so the "Pulse width"
+    // slider's low end actually has an effect — 0.02 sat above every value
+    // this expression produces for pulseWidthValue < ~3.33 (0.15 * 4 = 0.6,
+    // so 0.6 * pulseWidthValue/100 < 0.02 whenever pulseWidthValue < 3.33),
+    // silently flattening the slider's bottom third-plus into one identical
+    // width. The real "don't let it disappear" floor already lives in the
+    // shader (FLOW_MIN_SIGMA_PX, screen-space and zoom-aware) — this JS-side
+    // floor only needs to keep flowSigma from hitting exactly 0.
+    flowSigma = Math.max(0.0005, MODEL_FLOW_PULSE_BAND_FRACTION * pulseBandFraction * 4);
     flowPad = flowSigma * FLOW_PULSE_PAD_SIGMAS;
     flowRange = 1 + 2 * flowPad;
     // Linear for now (was an eased t^3 ease-in — the pulse noticeably
@@ -6641,7 +6776,8 @@ function renderLoop(now) {
 window.addEventListener('resize', resize);
 resize();
 renderLoop();
-loadBundledDefaultModel();
+if (IS_BATTERY_ROUTE) loadBundledBatteryModel();
+else loadBundledDefaultModel();
 
 // --- React control panel bridge --------------------------------------------
 //
@@ -6664,6 +6800,8 @@ export const controls = {
       // this to keep the control panel permanently hidden with no H-key
       // escape hatch, see IS_PREVIEW_ROUTE's own comment above.
       isPreviewRoute: IS_PREVIEW_ROUTE,
+      // Same again — panel.tsx only offers "Load NGEN battery" on /battery.
+      isBatteryRoute: IS_BATTERY_ROUTE,
       pulseWidth: pulseWidthValue,
       flowPulseFrequency: flowPulseFrequencyValue,
       flowPulseFrequencyMin: FLOW_PULSE_FREQUENCY_MIN,
@@ -6755,6 +6893,11 @@ export const controls = {
   setPlusFrequency,
   setPlusSizePercent,
   loadModelFiles: (files) => loadModelFromFiles(files),
+  loadBatteryModel: loadBundledBatteryModel,
+  setBatteryStackEnabled: (enabled) => configureBatteryStack(batteryStackCount, enabled),
+  setBatteryStackCount: (count) => configureBatteryStack(count),
+  setBatteryStackAnimation: (animation) => configureBatteryStack(batteryStackCount, batteryStackEnabled, animation),
+  replayBatteryStack: () => configureBatteryStack(batteryStackCount, true, batteryStackAnimation, true),
   setModelFlowDraw,
   setModelFlowSelectMode,
   deleteSelectedModelFlowArrow,

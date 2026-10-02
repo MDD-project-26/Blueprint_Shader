@@ -834,7 +834,76 @@ export function Panel() {
               </Button>
               <span className="text-muted-foreground text-xs">or drop .obj/.mtl anywhere</span>
               <span className="text-muted-foreground text-xs">{state.cubeModelStatus}</span>
+              {state.isBatteryRoute && (
+                <Button
+                  disabled={state.batteryModelLoading}
+                  onClick={() => controls.loadBatteryModel()}
+                  size="xs"
+                  variant="outline"
+                >
+                  {state.batteryModelLoading ? "Loading battery…" : "Load NGEN battery"}
+                </Button>
+              )}
             </div>
+
+            {state.batteryStackAvailable && (
+              <div className="flex flex-col gap-4">
+                <Label className="gap-2.5 text-xs">
+                  <Switch
+                    checked={state.batteryStackEnabled}
+                    onCheckedChange={(checked: boolean) => controls.setBatteryStackEnabled(checked)}
+                  />
+                  Battery stacking
+                </Label>
+                {state.batteryStackEnabled && (
+                  <>
+                    <div className="flex items-start gap-6">
+                      <Field className="relative h-48 w-4 shrink-0">
+                        <FieldLabel className="sr-only">Battery count</FieldLabel>
+                        <Slider
+                          className="h-full"
+                          max={9}
+                          min={3}
+                          onValueChange={(value: number | readonly number[]) => controls.setBatteryStackCount(Array.isArray(value) ? value[0] : value as number)}
+                          orientation="vertical"
+                          step={1}
+                          value={state.batteryStackCount}
+                        />
+                      </Field>
+                      <div className="flex h-48 flex-1 flex-col justify-between text-muted-foreground text-xs">
+                        {[9, 8, 7, 6, 5, 4, 3].map(count => (
+                          <button
+                            aria-label={`Select ${count} batteries`}
+                            aria-pressed={state.batteryStackCount === count}
+                            className={cn("text-left tabular-nums", state.batteryStackCount === count && "text-foreground")}
+                            key={count}
+                            onClick={() => controls.setBatteryStackCount(count)}
+                            type="button"
+                          >
+                            {count}{state.batteryStackCount === count ? " batteries" : ""}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <Label className="gap-2.5 text-xs">
+                      <Switch
+                        checked={state.batteryStackAnimation}
+                        onCheckedChange={(checked: boolean) => controls.setBatteryStackAnimation(checked)}
+                      />
+                      Animate stacking
+                    </Label>
+                    <Button
+                      disabled={!state.batteryStackAnimation}
+                      onClick={() => controls.replayBatteryStack()}
+                      size="xs"
+                      variant="outline"
+                    >
+                      Replay stack animation
+                    </Button>
+                  </>
+                )}
+              </div>
+            )}
 
             <div className="flex items-center gap-4">
               <Field className="flex-1 gap-3">
@@ -1446,7 +1515,8 @@ export function Panel() {
             <Field>
               <Slider
                 max={30}
-                min={1}
+                min={0.1}
+                step={0.1}
                 onValueChange={(value: number | readonly number[]) => {
                   const width = value as number;
                   controls.setPulseWidth(width);
