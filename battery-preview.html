@@ -149,8 +149,8 @@
     stops rendering while scrolled out of view, leaves the wheel, touch
     scrolling, the keyboard and file drops to the host page, and follows
     its own box if the layout resizes it (see IS_BATTERY_EMBED in main.js).
-    The opening stack animation waits until the whole canvas has scrolled
-    into view, so it isn't spent while the module is still below the fold.
+    The opening stack animation waits until all but the last 200px of the
+    canvas has scrolled into view, so it isn't spent while the module is still below the fold.
 
     The two .demo-placeholder sections around it only exist to make this
     page scroll, the way a real host page would.

@@ -3427,20 +3427,37 @@ function drawBatteryRanges(mode, ranges, setOpacity, depthPrepass) {
   gl.disable(gl.BLEND);
 }
 
-// The opening animation: the stack assembles itself, the same animation as
-// the panel's "Replay stack animation" (a replay only runs on a stack
-// that's already switched on, which loadBundledBatteryModel has done by
-// the time this is called). Once per model load. Embedded in a longer page
-// (IS_BATTERY_EMBED) it also waits for the whole canvas to be in view
-// — see the intro IntersectionObserver in Init — so it isn't spent while
-// the module is still somewhere below the fold.
+// The opening animation: the stack starts held apart — each module
+// BATTERY_INTRO_GAP_PX of screen height above the one below it (see
+// spreadBatteryForIntro, called once the model's loaded) — and, when
+// triggered, the modules ease together into the assembled stack
+// (batteryStack.settle). Once per model load. On /battery the trigger is
+// the load itself; embedded in a longer page (IS_BATTERY_EMBED) it waits
+// until the canvas is within BATTERY_INTRO_LEAD_PX of being wholly in view
+// — see the intro IntersectionObserver in Init — so the stack sits apart,
+// still, until someone's looking at it.
+const BATTERY_INTRO_GAP_PX = 50;
+const BATTERY_INTRO_LEAD_PX = 200;
 let batteryIntroPlayed = false;
 let batteryIntroInView = !IS_BATTERY_EMBED;
+
+function spreadBatteryForIntro() {
+  if (!batteryStackAnimation || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  // CSS pixels to object-space height: the ortho projection's pixels per
+  // view unit, the render scale, and how much of the model's vertical axis
+  // the current pitch leaves facing the screen.
+  const pxPerViewUnit = canvas.clientHeight / (2 * cubeProjectionHalfY);
+  const scale = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
+  const gap = BATTERY_INTRO_GAP_PX / (pxPerViewUnit * scale * Math.max(0.2, Math.cos(cubeRotX)));
+  batteryStack.spreadApart(gap);
+  updateBatteryStackGeometry();
+}
 
 function playBatteryIntro() {
   if (batteryIntroPlayed || !batteryIntroInView || !batteryStack || !batteryStackEnabled) return;
   batteryIntroPlayed = true;
-  configureBatteryStack(batteryStackCount, true, batteryStackAnimation, true);
+  batteryStack.settle(performance.now());
+  updateBatteryStackGeometry();
 }
 
 async function loadBundledBatteryModel() {
@@ -3463,6 +3480,7 @@ async function loadBundledBatteryModel() {
       batteryCenterY = batteryStack?.centerOffset ?? 0;
       batteryCenterVelocity = 0;
       batteryIntroPlayed = false;
+      spreadBatteryForIntro();
       playBatteryIntro();
     }
   } catch (error) {
@@ -6986,20 +7004,23 @@ if (IS_BATTERY_EMBED) {
   // resizing (a layout change, a collapsing sibling), which 'resize' alone
   // would never report.
   new ResizeObserver(resize).observe(canvas);
-  // The opening animation's own trigger (see playBatteryIntro): once, the
-  // first time the whole canvas is in view. "Whole" allows for a canvas as
-  // tall as (or taller than) the viewport, which sub-pixel rounding or a
-  // mobile URL bar would otherwise keep a hair short of fully visible
-  // forever: filling the viewport counts too. The fine-grained thresholds
-  // are only there so the callback keeps firing as it scrolls in.
+  // The opening animation's own trigger (see playBatteryIntro): once, when
+  // the canvas is within BATTERY_INTRO_LEAD_PX of being wholly in view —
+  // i.e. no more than that much of its height is still off screen — so the
+  // movement is already under way as the section arrives rather than
+  // starting after it has stopped. A canvas taller than the viewport can
+  // never get that close to wholly visible, so filling the viewport counts
+  // too. The fine-grained thresholds are only there so the callback keeps
+  // firing as it scrolls in.
   const introObserver = new IntersectionObserver(([entry]) => {
-    const fullyVisible = entry.intersectionRatio >= 0.99;
+    if (!entry.isIntersecting) return;
+    const hiddenPx = entry.boundingClientRect.height - entry.intersectionRect.height;
     const fillsViewport = !!entry.rootBounds && entry.intersectionRect.height >= entry.rootBounds.height - 1;
-    if (!entry.isIntersecting || !(fullyVisible || fillsViewport)) return;
+    if (hiddenPx > BATTERY_INTRO_LEAD_PX && !fillsViewport) return;
     introObserver.disconnect();
     batteryIntroInView = true;
     playBatteryIntro();
-  }, { threshold: [...Array.from({ length: 20 }, (_, i) => i / 20), 0.99, 1] });
+  }, { threshold: Array.from({ length: 101 }, (_, i) => i / 100) });
   introObserver.observe(canvas);
 }
 if (IS_BATTERY_ROUTE) loadBundledBatteryModel();

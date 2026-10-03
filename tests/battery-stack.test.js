@@ -485,3 +485,40 @@ test('a master caught in flight keeps moving while every removed slave still pla
     }
   }
 });
+
+test('the opening pose holds the parts apart until settle eases them into place', () => {
+  const stack = createBatteryStack(source);
+  stack.configure(3, true, false, 0);
+  const assembled = stack.update(0).objects.map(part => part.center[1]);
+  stack.configure(3, true, true, 0);
+  stack.spreadApart(5);
+  const apart = stack.update(10);
+  assert.deepEqual([...new Set(apart.objectIndex)], [0, 1, 8]);
+  assert.equal(apart.objects[0].center[1], assembled[0], 'The base stays where it is');
+  assert.ok(Math.abs(apart.objects[1].center[1] - assembled[1] - 5) < 1e-9);
+  assert.ok(Math.abs(apart.objects[8].center[1] - assembled[8] - 10) < 1e-9, 'Each part sits a further gap above the one below');
+  assert.equal(stack.animating, false);
+  assert.equal(stack.update(5000), null, 'It holds still until triggered');
+  stack.settle(6000);
+  let previous = stack.update(6000) || apart;
+  assert.ok(Math.abs(previous.objects[8].center[1] - assembled[8] - 10) < 1e-9, 'Settling starts from the held pose');
+  const early = stack.update(6080);
+  assert.ok(Math.abs(early.objects[8].center[1] - assembled[8] - 10 * (1 - 8 * .1 ** 4)) < 1e-9, 'Ease-in-out quart: barely moving at first');
+  const halfway = stack.update(6400);
+  assert.ok(Math.abs(halfway.objects[8].center[1] - assembled[8] - 5) < 1e-9, 'Half way there at half time');
+  previous = halfway;
+  for (let time = 6410; time <= 6800; time += 10) {
+    const next = stack.update(time);
+    for (const index of [1, 8]) assert.ok(next.objects[index].center[1] < previous.objects[index].center[1], 'Every part keeps moving down');
+    const gapBelow = next.objects[1].center[1] - assembled[1], gapAbove = next.objects[8].center[1] - assembled[8] - gapBelow;
+    assert.ok(Math.abs(gapBelow - gapAbove) < 1e-9, 'The gaps close together');
+    assertMasterClear(next);
+    previous = next;
+  }
+  assert.equal(stack.animating, false, 'It takes 800ms');
+  assert.deepEqual(previous.objects.map(part => part.center[1]), assembled);
+  stack.spreadApart(5); stack.update(8000);
+  stack.configure(5, true, true, 8000);
+  const changed = stack.update(8000);
+  assert.equal(changed.objects[8].center[1], assembled[8], 'A count change assembles the stack before animating');
+});

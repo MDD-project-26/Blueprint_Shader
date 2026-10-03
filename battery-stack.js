@@ -14,8 +14,11 @@ export function createBatteryStack(source) {
   const masterDuration = 300;
   const maxMasterDuration = 600;
   const staggerDuration = 35;
+  const settleDuration = 800;
   const easeOut = t => Math.sin(Math.PI * t / 2);
   const inverseEaseOut = progress => Math.asin(progress) * 2 / Math.PI;
+  // The opening settle's own curve: a slow start, a quick middle, a slow landing.
+  const easeInOutQuart = t => t < .5 ? 8 * t ** 4 : 1 - (-2 * t + 2) ** 4 / 2;
 
   // Crease edges use the original vertex positions; retain their object ownership.
   const vertexOwners = new Map();
@@ -51,6 +54,8 @@ export function createBatteryStack(source) {
   const slideOffsets = new Map(parts.map(part => [part.index, 0]));
   let active = new Set(parts.map(part => part.index));
   let motion = null;
+  // Held apart by spreadApart until settle brings the parts together.
+  let spread = false;
   const clamp = value => Math.max(0, Math.min(1, value));
   const selected = () => enabled ? [parts[0], ...parts.slice(1, count - 1), master] : parts;
   const masterOffset = total => (total - 9) * pitch;
@@ -71,7 +76,7 @@ export function createBatteryStack(source) {
       if (track.after && time < track.start) continue;
       const elapsed = Math.max(0, time - track.start);
       const phase = clamp(elapsed / track.duration);
-      const progress = track.leaving ? 1 - easeOut(1 - phase) : easeOut(phase);
+      const progress = track.leaving ? 1 - easeOut(1 - phase) : track.settle ? easeInOutQuart(phase) : easeOut(phase);
       const y = track.lowY + (track.highY - track.lowY) * progress;
       const x = track.lowX + (track.highX - track.lowX) * progress;
       if (offsets.get(track.index) !== y || slideOffsets.get(track.index) !== x) dirty = true;
@@ -98,6 +103,8 @@ export function createBatteryStack(source) {
     enabled = nextEnabled;
     animate = nextAnimate;
     const wanted = new Set(selected().map(part => part.index));
+    const wasPosed = !!motion?.replay || spread;
+    spread = false;
 
     if (!animate || !enabled || !wasEnabled) {
       motion = null;
@@ -117,7 +124,7 @@ export function createBatteryStack(source) {
       sample(now);
     } else {
       // A different destination gets a new path from the current visible pose.
-      if (motion?.replay) {
+      if (wasPosed) {
         for (const part of parts) {
           offsets.set(part.index, part === master ? masterOffset(previousCount) : 0);
           slideOffsets.set(part.index, 0);
@@ -258,6 +265,34 @@ export function createBatteryStack(source) {
 
   return {
     configure,
+    // The opening pose: the stack held still with every part lifted a further
+    // `gap` above the one below it, the base in its usual place. It stays
+    // that way until settle (or any count change, which assembles it at once).
+    spreadApart(gap) {
+      if (!enabled) return;
+      motion = null;
+      spread = true;
+      active = new Set(selected().map(part => part.index));
+      selected().forEach((part, order) => {
+        offsets.set(part.index, (part === master ? masterOffset(count) : 0) + order * gap);
+        slideOffsets.set(part.index, 0);
+      });
+      packed = null;
+      dirty = true;
+    },
+    // Closes the gaps left by spreadApart: every part eases down into its slot
+    // together on an ease-in-out quart.
+    settle(now, duration = settleDuration) {
+      if (!spread) return;
+      spread = false;
+      const tracks = selected().map(part => ({
+        index: part.index, start: 0, duration, lowY: offsets.get(part.index),
+        highY: part === master ? masterOffset(count) : 0, lowX: 0, highX: 0, settle: true,
+      }));
+      motion = { tracks, duration, time: 0, at: now, running: true, replay: true };
+      sample(now);
+      dirty = true;
+    },
     update(now) {
       if (!dirty && !motion?.running) return null;
       sample(now);
