@@ -30,6 +30,58 @@
     height: 100%;
     touch-action: pan-y;
   }
+  /* Stand-ins for the host page's own content, so this page scrolls and the
+     module can be seen entering and leaving the viewport. Not part of the
+     module — leave them behind when embedding. */
+  .demo-placeholder {
+    min-height: 200vh;
+    background: #041c2c;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: sans-serif;
+    font-size: 20px;
+    text-align: center;
+    padding: 2rem;
+    box-sizing: border-box;
+  }
+  /* Demo-only readout of whether the module is currently rendering (see
+     renderStatusEl in main.js). Fixed to the viewport, not the stage, so it
+     stays readable after the stage has scrolled away — which is exactly
+     when it should say "paused". Optional: main.js skips it if the element
+     isn't there, so leave it behind when embedding. */
+  #render-status {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    color: rgba(255, 255, 255, 0.9);
+    font-family: "Geist Mono", ui-monospace, monospace;
+    font-size: 11px;
+    line-height: 1;
+    pointer-events: none;
+    user-select: none;
+  }
+  #render-status::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #f5a524;
+  }
+  #render-status[data-rendering="true"]::before {
+    background: #3ddc84;
+  }
   /* Kept in the DOM but never painted — main.js needs both elements; see
      scroll-preview.html's own comment on the same rule for why. */
   #perf-monitor,
@@ -97,7 +149,14 @@
     stops rendering while scrolled out of view, leaves the wheel, touch
     scrolling, the keyboard and file drops to the host page, and follows
     its own box if the layout resizes it (see IS_BATTERY_EMBED in main.js).
+    The opening stack animation waits until the whole canvas has scrolled
+    into view, so it isn't spent while the module is still below the fold.
+
+    The two .demo-placeholder sections around it only exist to make this
+    page scroll, the way a real host page would.
   -->
+  <section class="demo-placeholder">Your own page content — above the battery section</section>
+
   <div id="battery-stage">
     <canvas id="canvas" data-battery="true" data-preview="true"></canvas>
     <div id="perf-monitor">
@@ -107,6 +166,11 @@
     <canvas height="84" id="axis-gizmo" width="84"></canvas>
     <div id="react-controls-root"></div>
   </div>
+
+  <section class="demo-placeholder">Your own page content — below the battery section</section>
+
+  <div id="render-status" role="status">Rendering</div>
+
   <script type="module" src="/src/main.tsx"></script>
   <script type="module" src="/main.js"></script>
 </body>

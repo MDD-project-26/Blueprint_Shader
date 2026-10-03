@@ -3427,6 +3427,22 @@ function drawBatteryRanges(mode, ranges, setOpacity, depthPrepass) {
   gl.disable(gl.BLEND);
 }
 
+// The opening animation: the stack assembles itself, the same animation as
+// the panel's "Replay stack animation" (a replay only runs on a stack
+// that's already switched on, which loadBundledBatteryModel has done by
+// the time this is called). Once per model load. Embedded in a longer page
+// (IS_BATTERY_EMBED) it also waits for the whole canvas to be in view
+// — see the intro IntersectionObserver in Init — so it isn't spent while
+// the module is still somewhere below the fold.
+let batteryIntroPlayed = false;
+let batteryIntroInView = !IS_BATTERY_EMBED;
+
+function playBatteryIntro() {
+  if (batteryIntroPlayed || !batteryIntroInView || !batteryStack || !batteryStackEnabled) return;
+  batteryIntroPlayed = true;
+  configureBatteryStack(batteryStackCount, true, batteryStackAnimation, true);
+}
+
 async function loadBundledBatteryModel() {
   if (batteryModelLoading) return;
   batteryModelLoading = true;
@@ -3446,10 +3462,8 @@ async function loadBundledBatteryModel() {
       configureBatteryStack(3, true);
       batteryCenterY = batteryStack?.centerOffset ?? 0;
       batteryCenterVelocity = 0;
-      // Then the stack assembles itself — the same animation as the panel's
-      // "Replay stack animation" (a replay only runs on a stack that's
-      // already switched on, hence the second call).
-      configureBatteryStack(3, true, batteryStackAnimation, true);
+      batteryIntroPlayed = false;
+      playBatteryIntro();
     }
   } catch (error) {
     console.error(error);
@@ -6917,10 +6931,20 @@ function recordAndDisplayFrameTiming(now) {
 // they should be by then.
 let renderLoopRunning = false;
 let canvasOnScreen = true;
+// battery-preview.html's corner readout of the above — optional (null on
+// every other page, and on a host page that leaves it out).
+const renderStatusEl = document.getElementById('render-status');
+
+function setRenderLoopRunning(running) {
+  renderLoopRunning = running;
+  if (!renderStatusEl || renderStatusEl.dataset.rendering === String(running)) return;
+  renderStatusEl.dataset.rendering = String(running);
+  renderStatusEl.textContent = running ? 'Rendering' : 'Paused (off screen)';
+}
 
 function startRenderLoop() {
   if (renderLoopRunning) return;
-  renderLoopRunning = true;
+  setRenderLoopRunning(true);
   // Otherwise the time spent stopped would count as one enormous frame and
   // drag the dynamic render scale down for no reason.
   perfLastFrameTime = performance.now();
@@ -6929,10 +6953,10 @@ function startRenderLoop() {
 
 function renderLoop(now) {
   if (!canvasOnScreen) {
-    renderLoopRunning = false;
+    setRenderLoopRunning(false);
     return;
   }
-  renderLoopRunning = true;
+  setRenderLoopRunning(true);
   if (videoRecording || pngSequenceExporting) {
     // captureVideo()/capturePngSequence() own canvas.width/height and
     // cubeParallaxX/Y exclusively for the whole export (see their own
@@ -6962,6 +6986,21 @@ if (IS_BATTERY_EMBED) {
   // resizing (a layout change, a collapsing sibling), which 'resize' alone
   // would never report.
   new ResizeObserver(resize).observe(canvas);
+  // The opening animation's own trigger (see playBatteryIntro): once, the
+  // first time the whole canvas is in view. "Whole" allows for a canvas as
+  // tall as (or taller than) the viewport, which sub-pixel rounding or a
+  // mobile URL bar would otherwise keep a hair short of fully visible
+  // forever: filling the viewport counts too. The fine-grained thresholds
+  // are only there so the callback keeps firing as it scrolls in.
+  const introObserver = new IntersectionObserver(([entry]) => {
+    const fullyVisible = entry.intersectionRatio >= 0.99;
+    const fillsViewport = !!entry.rootBounds && entry.intersectionRect.height >= entry.rootBounds.height - 1;
+    if (!entry.isIntersecting || !(fullyVisible || fillsViewport)) return;
+    introObserver.disconnect();
+    batteryIntroInView = true;
+    playBatteryIntro();
+  }, { threshold: [...Array.from({ length: 20 }, (_, i) => i / 20), 0.99, 1] });
+  introObserver.observe(canvas);
 }
 if (IS_BATTERY_ROUTE) loadBundledBatteryModel();
 else loadBundledDefaultModel();
