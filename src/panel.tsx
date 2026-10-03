@@ -234,7 +234,9 @@ export function Panel() {
   // persist effect below, which skips writing through to storage on this
   // route so that toggle never leaks back out to other routes either).
   const [hidden, setHidden] = useState(() =>
-    controls.getInitialState().isScrollRoute ? true : localStorage.getItem(CONTROLS_HIDDEN_KEY) === "1",
+    controls.getInitialState().isScrollRoute || controls.getInitialState().isPreviewRoute
+      ? true
+      : localStorage.getItem(CONTROLS_HIDDEN_KEY) === "1",
   );
   const [state, setState] = useState(() => controls.getInitialState());
   const [isDraggingFile, setIsDraggingFile] = useState(false);
@@ -280,9 +282,10 @@ export function Panel() {
   useEffect(() => {
     // Never persists on the /scroll route — see the forced-hidden default
     // above for why.
-    if (state.isScrollRoute) return;
+    // Nor on a preview route (battery-preview.html), hidden for good there.
+    if (state.isScrollRoute || state.isPreviewRoute) return;
     localStorage.setItem(CONTROLS_HIDDEN_KEY, hidden ? "1" : "0");
-  }, [hidden, state.isScrollRoute]);
+  }, [hidden, state.isScrollRoute, state.isPreviewRoute]);
 
   useEffect(() => {
     controls.setPanelsHidden(hidden);
@@ -312,6 +315,9 @@ export function Panel() {
     // know when the drag has actually left the window. main.js has its own
     // window-level drop handler that does the actual model loading; this
     // effect only tracks drag state to show the overlay.
+    // Not on /battery-preview: embedded in a host page, file drags there are
+    // none of this module's business (main.js skips its drop handler too).
+    if (controls.getInitialState().isPreviewRoute && controls.getInitialState().isBatteryRoute) return;
     let depth = 0;
     const isFileDrag = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
 
@@ -347,7 +353,8 @@ export function Panel() {
 
   const overlayPhase = useRevealPhase(isDraggingFile, MODAL_CLOSE_MS);
   const panelPhase = useRevealPhase(!hidden, MODAL_CLOSE_MS);
-  const cameraTargetsPhase = useRevealPhase((state.customModelObjectNames?.length ?? 0) > 0, MODAL_CLOSE_MS);
+  // /battery has no camera targets, so the section never opens there.
+  const cameraTargetsPhase = useRevealPhase(!state.isBatteryRoute && (state.customModelObjectNames?.length ?? 0) > 0, MODAL_CLOSE_MS);
   const photoOptionsPhase = useRevealPhase(!!state.photoMode, MODAL_CLOSE_MS);
   const lineWidthSliderPhase = useRevealPhase(!!state.photoUniformLineWidth, MODAL_CLOSE_MS);
   const flowObjectsPhase = useRevealPhase((state.selectedFlowArrowObjects?.length ?? 0) > 0, MODAL_CLOSE_MS);
@@ -523,6 +530,39 @@ export function Panel() {
     return () => observer.disconnect();
   }, [state.isScrollRoute]);
 
+  // The battery count slider in the Model Controls panel (/battery-preview
+  // has its own horizontal one, see below).
+  const batteryCountControl = (
+    <div className="flex items-start gap-6">
+      <Field className="relative h-48 w-4 shrink-0">
+        <FieldLabel className="sr-only">Battery count</FieldLabel>
+        <Slider
+          className="h-full"
+          max={9}
+          min={3}
+          onValueChange={(value: number | readonly number[]) => controls.setBatteryStackCount(Array.isArray(value) ? value[0] : value as number)}
+          orientation="vertical"
+          step={1}
+          value={state.batteryStackCount}
+        />
+      </Field>
+      <div className="flex h-48 flex-1 flex-col justify-between text-muted-foreground text-xs">
+        {[9, 8, 7, 6, 5, 4, 3].map(count => (
+          <button
+            aria-label={`Select ${count} batteries`}
+            aria-pressed={state.batteryStackCount === count}
+            className={cn("text-left tabular-nums", state.batteryStackCount === count && "text-foreground")}
+            key={count}
+            onClick={() => controls.setBatteryStackCount(count)}
+            type="button"
+          >
+            {count}{state.batteryStackCount === count ? " batteries" : ""}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     <>
       {overlayPhase !== "closed" && (
@@ -542,6 +582,40 @@ export function Panel() {
           >
             Drop the file to change the model
           </p>
+        </div>
+      )}
+
+      {/* /battery-preview's only control (the panels never show there): the
+          same battery count slider as the Model Controls panel's, laid out
+          horizontally along the bottom. Absolute, not fixed: it belongs to
+          the section this module is embedded in (see battery-preview.html's
+          #battery-stage) and scrolls away with it. */}
+      {state.isPreviewRoute && state.isBatteryRoute && state.batteryStackEnabled && (
+        <div className="absolute bottom-6 left-1/2 z-10 flex w-[min(92vw,22rem)] -translate-x-1/2 flex-col gap-3 rounded-[24px] border border-border bg-popover/80 px-6 py-5 text-popover-foreground text-sm shadow-lg backdrop-blur-sm">
+          <Field>
+            <FieldLabel className="sr-only">Battery count</FieldLabel>
+            <Slider
+              max={9}
+              min={3}
+              onValueChange={(value: number | readonly number[]) => controls.setBatteryStackCount(Array.isArray(value) ? value[0] : value as number)}
+              step={1}
+              value={state.batteryStackCount}
+            />
+          </Field>
+          <div className="flex justify-between text-muted-foreground text-xs">
+            {[3, 4, 5, 6, 7, 8, 9].map(count => (
+              <button
+                aria-label={`Select ${count} batteries`}
+                aria-pressed={state.batteryStackCount === count}
+                className={cn("w-4 text-center tabular-nums", state.batteryStackCount === count && "text-foreground")}
+                key={count}
+                onClick={() => controls.setBatteryStackCount(count)}
+                type="button"
+              >
+                {count}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
@@ -577,6 +651,8 @@ export function Panel() {
 
       {panelPhase !== "closed" && (
         <div className="pointer-events-none fixed bottom-6 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-2">
+          {/* Flow draw mode does not exist on /battery (see setModelFlowDraw in main.js). */}
+          {!state.isBatteryRoute && (
           <button
             className={cn(
               "t-fade-center pointer-events-auto cursor-pointer overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
@@ -622,8 +698,9 @@ export function Panel() {
               )}
             </span>
           </button>
+          )}
 
-          {!state.isScrollRoute && (
+          {!state.isScrollRoute && !state.isBatteryRoute && (
           <div className="relative">
             <div
               className={cn(
@@ -722,7 +799,7 @@ export function Panel() {
           </div>
           )}
 
-          {!state.isScrollRoute && (
+          {!state.isScrollRoute && !state.isBatteryRoute && (
           <div
             className={cn(
               "t-fade-center overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
@@ -857,34 +934,7 @@ export function Panel() {
                 </Label>
                 {state.batteryStackEnabled && (
                   <>
-                    <div className="flex items-start gap-6">
-                      <Field className="relative h-48 w-4 shrink-0">
-                        <FieldLabel className="sr-only">Battery count</FieldLabel>
-                        <Slider
-                          className="h-full"
-                          max={9}
-                          min={3}
-                          onValueChange={(value: number | readonly number[]) => controls.setBatteryStackCount(Array.isArray(value) ? value[0] : value as number)}
-                          orientation="vertical"
-                          step={1}
-                          value={state.batteryStackCount}
-                        />
-                      </Field>
-                      <div className="flex h-48 flex-1 flex-col justify-between text-muted-foreground text-xs">
-                        {[9, 8, 7, 6, 5, 4, 3].map(count => (
-                          <button
-                            aria-label={`Select ${count} batteries`}
-                            aria-pressed={state.batteryStackCount === count}
-                            className={cn("text-left tabular-nums", state.batteryStackCount === count && "text-foreground")}
-                            key={count}
-                            onClick={() => controls.setBatteryStackCount(count)}
-                            type="button"
-                          >
-                            {count}{state.batteryStackCount === count ? " batteries" : ""}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                    {batteryCountControl}
                     <Label className="gap-2.5 text-xs">
                       <Switch
                         checked={state.batteryStackAnimation}
@@ -1340,6 +1390,8 @@ export function Panel() {
 
             <h2 className="font-semibold text-base text-foreground">Interaction Controls</h2>
 
+            {/* The hover orbit is off on /battery, so its switch is too. */}
+            {!state.isBatteryRoute && (
             <div className="flex items-center gap-4">
               <Label className="gap-2.5 text-xs">
                 <Switch
@@ -1353,6 +1405,7 @@ export function Panel() {
                 Hover
               </Label>
             </div>
+            )}
 
             <div className="flex items-center gap-4">
               <Label className="gap-2.5 text-xs">
@@ -1388,7 +1441,8 @@ export function Panel() {
         </div>
       )}
 
-      {panelPhase !== "closed" && (
+      {/* /battery has no flow arrows, so no Flow Controls panel either. */}
+      {panelPhase !== "closed" && !state.isBatteryRoute && (
         <div
           className={cn(
             "t-panel t-panel-right fixed top-4 right-4 z-10 max-h-[calc(100vh-2rem)] w-[min(92vw,13rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm",

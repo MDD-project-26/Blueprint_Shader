@@ -12,6 +12,7 @@ export function createBatteryStack(source) {
   const slideDistance = pitch * 1.4;
   const slideDuration = 150;
   const masterDuration = 300;
+  const maxMasterDuration = 600;
   const staggerDuration = 35;
   const easeOut = t => Math.sin(Math.PI * t / 2);
   const inverseEaseOut = progress => Math.asin(progress) * 2 / Math.PI;
@@ -56,7 +57,7 @@ export function createBatteryStack(source) {
 
   // The master eases to its target. Added slaves slide into place behind it;
   // removed slaves play that slide backwards ahead of it, accelerating out along
-  // +X and vanishing at full speed, where an entering slave first appears.
+  // +X. Both fade with the slide (see update's fades), so nothing pops.
   // Existing slides retain their elapsed phase when the destination changes.
   function sample(now) {
     if (!motion?.running) return;
@@ -66,6 +67,8 @@ export function createBatteryStack(source) {
     motion.running = time < motion.duration;
     const visible = new Set();
     for (const track of motion.tracks) {
+      // A second leg for the same part takes over once its turn comes.
+      if (track.after && time < track.start) continue;
       const elapsed = Math.max(0, time - track.start);
       const phase = clamp(elapsed / track.duration);
       const progress = track.leaving ? 1 - easeOut(1 - phase) : easeOut(phase);
@@ -129,39 +132,55 @@ export function createBatteryStack(source) {
         if (!previous || previous.highX !== targetX || previous.lowX === targetX || motion.time < previous.start) return null;
         return { ...previous, start: previous.start - motion.time };
       };
-      // Each exit ends as the eased master reaches that slot, so the slaves peel
-      // off from the top down. A resting master waits for the slave beneath it;
-      // one already in flight never stalls, and the exits shorten to fit instead.
-      const flight = !motion?.replay && motion?.running && motion.tracks.find(track => track.index === master.index);
-      const masterMoving = !!flight && flight.lowY !== flight.highY
-        && motion.time > flight.start && motion.time < flight.start + flight.duration;
+      // Every removed slave plays its whole exit, however fast the count changes;
+      // the master is what gives way. It first settles onto the highest departing
+      // slave while that one slides out (a hold if it already rests there), then
+      // descends with its ease-out as each lower slave leaves just ahead of it.
       const departures = [];
-      let masterDelay = 0;
-      for (const part of parts.slice(1, 8)) {
+      for (const part of parts.slice(1, 8).reverse()) {
         if (!active.has(part.index) || wanted.has(part.index)) continue;
         // A slave caught mid-slide resumes the exit curve from where it is.
         const currentX = slideOffsets.get(part.index);
         const phase = currentX > 0 ? 1 - inverseEaseOut(clamp(1 - currentX / slideDistance)) : 0;
-        const remaining = slideDuration * (1 - phase);
-        const top = part.bounds.maxY + offsets.get(part.index) - seam;
-        const clearance = targetY < currentY
-          ? inverseEaseOut(clamp((master.bounds.minY + currentY - top) / (currentY - targetY))) * masterDuration : 0;
-        departures.push({ part, phase, remaining, clearance });
-        if (!masterMoving) masterDelay = Math.max(masterDelay, remaining - clearance);
+        if (phase > .999) continue;
+        const top = part.bounds.maxY + offsets.get(part.index) - seam - master.bounds.minY;
+        departures.push({ part, top, phase, remaining: slideDuration * (1 - phase) });
       }
-      tracks.push({ index: master.index, start: masterDelay, duration: masterDuration,
-        lowY: currentY, highY: targetY, lowX: 0, highX: 0 });
-      let duration = masterDelay + masterDuration;
-      for (const { part, phase, remaining, clearance } of departures) {
-        const end = masterDelay + clearance;
-        const length = Math.min(remaining, end);
-        // No time left before the master arrives: the slave is simply removed.
-        if (length < 1) continue;
-        const span = length / (1 - phase);
+      // Each slot's reach is the share of the descent spent before the master gets
+      // there. When the slaves below need longer than that, the descent slows
+      // down rather than the master hanging where a slave has just left.
+      let restY = currentY, hold = 0, settle = 0;
+      const plan = (first, wait) => {
+        restY = Math.min(currentY, departures[first].top);
+        hold = wait;
+        settle = hold + slideDuration * clamp((currentY - restY) / pitch);
+        departures.forEach((departure, order) => {
+          departure.reach = order > first && restY > targetY ? inverseEaseOut(clamp((restY - departure.top) / (restY - targetY))) : 0;
+          if (order >= first) settle = Math.max(settle, departure.remaining - departure.reach * maxMasterDuration);
+        });
+      };
+      if (departures.length) {
+        plan(0, 0);
+        // Resting on a slave that is nearly out while the next needs its full
+        // slide: once free, the master glides down onto that next slave instead.
+        const resting = currentY - restY < pitch * .05;
+        if (resting && departures.length > 1 && settle > departures[0].remaining + 1) plan(1, departures[0].remaining);
+      }
+      let descent = masterDuration;
+      for (const { remaining, reach } of departures) {
+        if (reach > 0) descent = Math.max(descent, Math.min(maxMasterDuration, (remaining - settle) / reach));
+      }
+      if (settle > 0) tracks.push({ index: master.index, start: hold, duration: settle - hold,
+        lowY: currentY, highY: restY, lowX: 0, highX: 0 });
+      tracks.push({ index: master.index, start: settle, duration: descent,
+        lowY: restY, highY: targetY, lowX: 0, highX: 0, after: settle > 0 });
+      let duration = settle + descent;
+      for (const { part, phase, remaining, reach } of departures) {
+        // Slaves lower down wait in place until it is their turn.
+        const wait = phase > 0 ? 0 : Math.max(0, settle + reach * descent - remaining);
         const y = offsets.get(part.index);
-        tracks.push({ index: part.index, start: (phase > 0 ? 0 : end - length) - phase * span, duration: span,
+        tracks.push({ index: part.index, start: wait - phase * slideDuration, duration: slideDuration,
           lowY: y, highY: y, lowX: 0, highX: slideDistance, leaving: true });
-        duration = Math.max(duration, end);
       }
       for (const part of parts.slice(0, 8)) {
         const visible = active.has(part.index);
@@ -283,9 +302,18 @@ export function createBatteryStack(source) {
       if (!dirty && !membershipChanged && !geometryChanged && !objectsChanged) return null;
       dirty = false;
       lastReturnedPacked = packed;
-      return { ...packed, objects: objects.slice(), membershipChanged };
+      // A slave is transparent at the far end of its slide and solid in its slot,
+      // so it fades in as it arrives and out as it leaves instead of popping.
+      const fades = [];
+      for (const part of parts) {
+        const opacity = 1 - clamp(slideOffsets.get(part.index) / slideDistance);
+        if (active.has(part.index) && opacity < 1) fades.push({ index: part.index, opacity });
+      }
+      return { ...packed, objects: objects.slice(), membershipChanged, fades };
     },
     get activeNames() { return selected().map(part => part.name); },
+    // How far the requested stack's middle sits from the full nine-high stack's.
+    get centerOffset() { return enabled ? masterOffset(count) / 2 : 0; },
     get animating() { return !!motion?.running; },
   };
 }

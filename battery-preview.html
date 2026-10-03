@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bluprint Models — Battery Preview</title>
+<link rel="icon" type="image/png" href="/favicon.png" />
+<style>
+  html, body {
+    margin: 0;
+    background: #000;
+  }
+  /* The module's own box. Everything it draws stays inside this element,
+     so it can sit anywhere in a longer page: give it whatever size the
+     layout needs (a full viewport here) and it scrolls with the rest of
+     the content. position: relative anchors the count slider to it;
+     overflow: hidden keeps the slider card from spilling out. */
+  #battery-stage {
+    position: relative;
+    width: 100%;
+    height: 100vh;
+    height: 100svh;
+    overflow: hidden;
+  }
+  /* touch-action: pan-y lets a finger on the canvas scroll the page (main.js
+     ignores touch drags here for the same reason — see IS_BATTERY_EMBED). */
+  canvas#canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: pan-y;
+  }
+  /* Kept in the DOM but never painted — main.js needs both elements; see
+     scroll-preview.html's own comment on the same rule for why. */
+  #perf-monitor,
+  #axis-gizmo {
+    visibility: hidden;
+  }
+  #perf-monitor {
+    position: fixed;
+    top: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    padding: 6px 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    color: rgba(255, 255, 255, 0.85);
+    font-family: "Geist Mono", ui-monospace, monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    user-select: none;
+  }
+  #perf-monitor-text {
+    white-space: pre;
+  }
+  #perf-history {
+    display: block;
+    width: 140px;
+    height: 32px;
+    margin-top: 6px;
+  }
+  #axis-gizmo {
+    display: block;
+    position: fixed;
+    bottom: 1rem;
+    right: 1rem;
+    z-index: 10;
+    width: 84px;
+    height: 84px;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+  <!--
+    A debug-free preview of battery.html — same /main.js and /src/main.tsx,
+    same data-battery="true" IS_BATTERY_ROUTE behavior (the bundled NGEN
+    battery with stacking on, light shader theme, camera following the
+    stack), but with the editing/debug surface stripped out of view:
+
+    - No control panel chrome — data-preview="true" below becomes
+      state.isPreviewRoute in panel.tsx, which keeps the panels permanently
+      hidden with no "H" toggle to bring them back. The one control that
+      stays is a horizontal battery count slider at the bottom center (see
+      panel.tsx), since choosing a count is what this page is for.
+    - No FPS/perf monitor, no axis-orientation gizmo — both stay in the DOM
+      but are visually hidden (see the CSS comment above).
+
+    Built to be embedded as one section of a longer, scrolling page: copy
+    #battery-stage (and its CSS) into the page and size it as needed. It
+    stops rendering while scrolled out of view, leaves the wheel, touch
+    scrolling, the keyboard and file drops to the host page, and follows
+    its own box if the layout resizes it (see IS_BATTERY_EMBED in main.js).
+  -->
+  <div id="battery-stage">
+    <canvas id="canvas" data-battery="true" data-preview="true"></canvas>
+    <div id="perf-monitor">
+      <div id="perf-monitor-text"></div>
+      <canvas height="32" id="perf-history" width="140"></canvas>
+    </div>
+    <canvas height="84" id="axis-gizmo" width="84"></canvas>
+    <div id="react-controls-root"></div>
+  </div>
+  <script type="module" src="/src/main.tsx"></script>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

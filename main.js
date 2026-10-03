@@ -53,15 +53,28 @@ const IS_SCROLL_ROUTE = canvas?.dataset.scroll === 'true';
 // the separate __HERO__-stripped build (see perfMonitorEl/axisGizmoCanvas
 // below) and adding a real branch for them would only matter once a
 // tree-shaken preview build (mirroring canvas.html) replaces this
-// same-bundle approach.
+// same-bundle approach. battery-preview.html pairs the same flag with
+// data-battery instead: panels hidden for good, only the battery count
+// slider left on screen (see panel.tsx).
 const IS_PREVIEW_ROUTE = canvas?.dataset.preview === 'true';
 // battery.html's own data-battery="true" — the same tool as index.html
 // (full panel, same main.tsx/main.js), except startup loads the bundled
 // NGEN battery (loadBundledBatteryModel) with stacking already switched on
-// instead of loadBundledDefaultModel's scene and intro. Flow arrows drawn
-// here are never persisted (see saveModelFlowPath): localStorage is shared
-// with the other routes, whose saved arrows belong to a different model.
+// instead of loadBundledDefaultModel's scene and intro. Several features
+// are switched off here, in this module and in the panel alike: the flow
+// feature (no draw mode — see setModelFlowDraw — and nothing read from or
+// written to the other routes' saved arrows, see saveModelFlowPath, which
+// belong to a different model), camera targets (see setCameraTargetSlot),
+// photo/video mode (their key handlers are never wired up), and the hover
+// orbit (see updateParallaxTargetFromPointer). battery-preview.html sets
+// this flag too, so all of it applies there as well.
 const IS_BATTERY_ROUTE = canvas?.dataset.battery === 'true';
+// battery-preview.html (both flags) is the version meant to be embedded as
+// one section of a longer, scrolling page — so it must leave the page
+// alone: no keyboard shortcuts, no wheel-zoom or touch-drag swallowing the
+// page's own scroll, no window-wide file drop, and no rendering at all
+// while it's scrolled out of view (see each IS_BATTERY_EMBED check).
+const IS_BATTERY_EMBED = IS_BATTERY_ROUTE && IS_PREVIEW_ROUTE;
 
 // #scroll-track (scroll.html) is the only thing giving the /scroll route's
 // document real scroll height — see its own CSS comment. Sized dynamically
@@ -400,9 +413,9 @@ const storedShaderTheme = localStorage.getItem(SHADER_THEME_STORAGE_KEY);
 // it's meant to always start the same way. The panel's theme switch still
 // works live during the session (and still writes through to the same
 // shared storage other routes read), this only pins what *this* route boots
-// into. Every other route keeps its prior behavior: stored 'light'/'dark'
-// wins, dark otherwise.
-let shaderTheme = IS_SCROLL_ROUTE
+// into. The /battery route gets the same treatment. Every other route keeps
+// its prior behavior: stored 'light'/'dark' wins, dark otherwise.
+let shaderTheme = IS_SCROLL_ROUTE || IS_BATTERY_ROUTE
   ? 'light'
   : storedShaderTheme === 'light' || storedShaderTheme === 'dark'
     ? storedShaderTheme
@@ -641,6 +654,9 @@ const CUBE_FRAGMENT_SHADER = `
   uniform float uPlusFrequency;
   uniform float uPlusArmHalf;
   uniform float uPlusThickness;
+  // 1 everywhere except battery slaves fading in or out of the stack (see
+  // drawBatteryRanges), which draw as their own blended batch.
+  uniform float uOpacity;
 
   // Shared by all three fill patterns below (lines/dots/plus): projects
   // object-space position onto the two axes spanning the face (dropping
@@ -878,7 +894,7 @@ const CUBE_FRAGMENT_SHADER = `
     if (fillPatternId != 0) {
       color = mix(color, uHatchLineColor, fillMask);
     }
-    gl_FragColor = vec4(color, 1.0);
+    gl_FragColor = vec4(color, uOpacity);
   }
 `;
 
@@ -1066,6 +1082,7 @@ const uProjection = gl.getUniformLocation(cubeProgram, 'uProjection');
 const uLightDir = gl.getUniformLocation(cubeProgram, 'uLightDir');
 const uLightIntensity = gl.getUniformLocation(cubeProgram, 'uLightIntensity');
 const uBlueprint = gl.getUniformLocation(cubeProgram, 'uBlueprint');
+const uOpacity = gl.getUniformLocation(cubeProgram, 'uOpacity');
 const uBlueprintFillColor = gl.getUniformLocation(cubeProgram, 'uBlueprintFillColor');
 const uBlueprintFillColorGreen = gl.getUniformLocation(cubeProgram, 'uBlueprintFillColorGreen');
 const uFlowActive = gl.getUniformLocation(cubeProgram, 'uFlowActive');
@@ -1302,8 +1319,12 @@ const CUBE_BIRDSEYE_PITCH = Math.PI / 2;
 // tweenCubeRotationTo call, MODEL_LOAD_ROTATION_INTRO_MS). The /scroll route
 // (IS_SCROLL_ROUTE) skips that whole opening shot, so it starts pinned
 // directly at the resting angle instead — nothing ever tweens away from it.
-let cubeRotX = IS_SCROLL_ROUTE ? CUBE_ISO_PITCH : CUBE_BIRDSEYE_PITCH;
-let cubeRotY = IS_SCROLL_ROUTE ? CUBE_ISO_YAW : CUBE_BIRDSEYE_YAW;
+// The battery routes (IS_BATTERY_ROUTE) start there too: their opening is
+// the stack assembling itself, with the view already still at its resting
+// angle rather than swinging down from above at the same time.
+const STARTS_AT_RESTING_ANGLE = IS_SCROLL_ROUTE || IS_BATTERY_ROUTE;
+let cubeRotX = STARTS_AT_RESTING_ANGLE ? CUBE_ISO_PITCH : CUBE_BIRDSEYE_PITCH;
+let cubeRotY = STARTS_AT_RESTING_ANGLE ? CUBE_ISO_YAW : CUBE_BIRDSEYE_YAW;
 let cubeDragging = false;
 let cubeLastPointer = null;
 
@@ -1736,7 +1757,9 @@ function focusIsOnInteractiveControl() {
   return role === 'switch' || role === 'button';
 }
 
-if (!IS_HERO) {
+// Not wired up on the embedded battery either (IS_BATTERY_EMBED): Space,
+// the digits and plain letters belong to the host page there.
+if (!IS_HERO && !IS_BATTERY_EMBED) {
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'Space' || spaceHeld) return;
   if (focusIsOnInteractiveControl()) return;
@@ -1872,8 +1895,9 @@ window.addEventListener('keydown', (event) => {
 // The /scroll route (IS_SCROLL_ROUTE) drops photo/video mode entirely, same
 // as it drops the opening camera move (see the flag's own declaration) —
 // none of the P/Escape/Shift+P/V/Enter/Cmd+Enter handlers below are wired up
-// there, so those keys are plain no-ops on that route.
-if (!IS_SCROLL_ROUTE) {
+// there, so those keys are plain no-ops on that route. The /battery route
+// (IS_BATTERY_ROUTE) drops photo/video mode the same way.
+if (!IS_SCROLL_ROUTE && !IS_BATTERY_ROUTE) {
 // P enters photo mode (see setPhotoMode/photoMode's own comment) — no
 // longer a toggle: once photoMode is already on, plain P is a no-op rather
 // than exiting, since P and Shift+P (capture, just below) are one keystroke
@@ -1944,7 +1968,7 @@ window.addEventListener('keydown', (event) => {
   event.preventDefault();
   capturePngSequence();
 });
-} // end if (!IS_SCROLL_ROUTE) — photo/video mode
+} // end if (!IS_SCROLL_ROUTE && !IS_BATTERY_ROUTE) — photo/video mode
 
 // 1-7 jump straight to Camera Target 1-7 (see goToCameraTarget), same
 // shortcut as each target's own "Go" button in the panel. Ignored while
@@ -1977,7 +2001,7 @@ window.addEventListener('keydown', (event) => {
   event.preventDefault();
   goToDefaultCameraView();
 });
-} // end if (!IS_HERO) — keyboard shortcuts
+} // end if (!IS_HERO && !IS_BATTERY_EMBED) — keyboard shortcuts
 
 // wheelZoomSyncRAF/scheduleWheelZoomSync stay outside the IS_HERO guard —
 // renderCubeFrame's intro zoom tween (see cubeRotResetZoomInFactor) calls
@@ -2016,6 +2040,7 @@ const CUBE_WHEEL_ZOOM_SPEED = 0.0018; // tuned so one typical mouse-wheel notch 
 canvas.addEventListener(
   'wheel',
   (event) => {
+    if (IS_BATTERY_EMBED) return; // embedded in a scrolling page: the wheel scrolls the page, never zooms
     if (IS_SCROLL_ROUTE && !modelFlowDrawMode) return; // let native page scroll through — renderCubeFrame's IS_SCROLL_ROUTE branch reads window.scrollY to blend Camera Targets instead
     event.preventDefault();
     const factor = Math.exp(-event.deltaY * CUBE_WHEEL_ZOOM_SPEED);
@@ -2039,6 +2064,10 @@ if (!IS_HERO) {
 // listener further down, kept outside this guard) — only ambient
 // hover-parallax remains.
 canvas.addEventListener('pointerdown', (event) => {
+  // Embedded in a scrolling page, a finger on the canvas scrolls the page
+  // (see battery-preview.html's touch-action) rather than rotating the
+  // model; mouse and pen drags still rotate.
+  if (IS_BATTERY_EMBED && event.pointerType === 'touch') return;
   if (modelFlowSelectMode) return;
   if (zKeyHeld) {
     zDragging = true;
@@ -2203,6 +2232,9 @@ function updateParallaxTargetFromPointer(event) {
   // they're lining up. photoMode/videoMode lock it too, so the orientation
   // stays at the fixed default isometric angle setPhotoMode/setVideoMode
   // snapped to — see their own comments.
+  // No hover orbit at all on /battery and /battery-preview: the target never
+  // leaves 0, so the tilt it eases toward stays flat.
+  if (IS_BATTERY_ROUTE) return;
   if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld || rKeyHeld || zKeyHeld || editingDefaultView || photoMode || videoMode) return;
   const nx = Math.max(-1, Math.min(1, (event.clientX / window.innerWidth) * 2 - 1));
   const ny = Math.max(-1, Math.min(1, (event.clientY / window.innerHeight) * 2 - 1));
@@ -3027,6 +3059,9 @@ function getModelState() {
 }
 
 function setCameraTargetSlot(slotIndex, objectName) {
+  // No camera targets on /battery: with no slot ever assigned, the Digit
+  // keys and goToCameraTarget have nothing to go to.
+  if (IS_BATTERY_ROUTE) return;
   cameraTargetSlots = cameraTargetSlots.map((v, i) => (i === slotIndex ? objectName || null : v));
   if (cameraTargetActiveIndex === slotIndex && !objectName) {
     cameraTargetActiveIndex = null;
@@ -3258,6 +3293,37 @@ let batteryStackAnimation = true;
 let batteryModelLoading = false;
 let batteryGreenTriangleRanges = [];
 let batteryAllTrianglesGreen = false;
+// Per-part draw ranges and the parts currently fading (see drawBatteryRanges).
+let batteryVertexRanges = [];
+let batteryLineRanges = [];
+let batteryFades = [];
+// Keeps the stack in the middle of the view as it grows and shrinks: the
+// object-space height its middle has moved by, eased toward the requested
+// count's own middle (batteryStack.centerOffset) by its own spring rather
+// than tracking the master part directly — the master waits for slaves to
+// clear and moves in legs, which the camera shouldn't echo. Applied through
+// getObjectSpacePan, so rotation keeps pivoting around the stack's middle
+// and raycasting stays in step with what's drawn. Much stiffer than the
+// camera-target spring (same damping ratio) so it settles about as fast as
+// the stack itself does.
+const BATTERY_CENTER_SPRING_STIFFNESS = 120;
+const BATTERY_CENTER_SPRING_DAMPING = 25.4;
+let batteryCenterY = 0;
+let batteryCenterVelocity = 0;
+let batteryCenterLastTime = null;
+
+function stepBatteryCentering() {
+  const goal = batteryStack?.centerOffset ?? 0;
+  const now = performance.now();
+  const dt = batteryCenterLastTime === null ? 0 : Math.min(CAMERA_TARGET_SPRING_MAX_DT, (now - batteryCenterLastTime) / 1000);
+  batteryCenterLastTime = now;
+  if (batteryCenterY === goal && batteryCenterVelocity === 0) return;
+  [batteryCenterY, batteryCenterVelocity] = stepSpring(batteryCenterY, batteryCenterVelocity, goal, dt, BATTERY_CENTER_SPRING_STIFFNESS, BATTERY_CENTER_SPRING_DAMPING);
+  if (Math.abs(batteryCenterY - goal) < 1e-4 && Math.abs(batteryCenterVelocity) < 1e-3) {
+    batteryCenterY = goal;
+    batteryCenterVelocity = 0;
+  }
+}
 
 function configureBatteryStack(count = batteryStackCount, enabled = batteryStackEnabled, animation = batteryStackAnimation, replay = false) {
   if (!batteryStack) return;
@@ -3267,6 +3333,10 @@ function configureBatteryStack(count = batteryStackCount, enabled = batteryStack
   batteryStackAnimation = !!animation;
   const shouldAnimate = batteryStackAnimation && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   batteryStack.configure(count, batteryStackEnabled, shouldAnimate, performance.now(), replay);
+  if (!shouldAnimate) {
+    batteryCenterY = batteryStack.centerOffset;
+    batteryCenterVelocity = 0;
+  }
   clearModelFlowPath();
   updateBatteryStackGeometry();
   notifyModelState();
@@ -3297,6 +3367,9 @@ function updateBatteryStackGeometry() {
   customModelIsGreenCache = geometry.isGreen;
   customModelLinePositionsCache = geometry.linePositions;
   customModelObjects = geometry.objects;
+  batteryVertexRanges = geometry.vertexRanges;
+  batteryLineRanges = geometry.lineRanges;
+  batteryFades = geometry.fades;
   if (geometry.membershipChanged) {
     const owners = [];
     batteryGreenTriangleRanges = [];
@@ -3325,6 +3398,35 @@ function updateBatteryStackGeometry() {
   if (geometry.membershipChanged) recomputeModelFlowCoords();
 }
 
+// Slaves sliding into or out of the battery stack fade with the slide (see
+// createBatteryStack's fades) instead of popping. Solid parts draw first;
+// each fading part then blends over them — after a depth-only pass for
+// filled faces, so it reads as one translucent solid rather than showing
+// its own far faces through its near ones.
+function drawBatteryRanges(mode, ranges, setOpacity, depthPrepass) {
+  const opacities = new Map(batteryFades.map((fade) => [fade.index, fade.opacity]));
+  const draw = (range) => gl.drawArrays(mode, range.start / 3, (range.end - range.start) / 3);
+  for (const range of ranges) if (!opacities.has(range.index)) draw(range);
+  gl.enable(gl.BLEND);
+  // Separate alpha factors keep the canvas itself opaque under the fade.
+  gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  for (const [index, opacity] of opacities) {
+    if (opacity <= 0) continue;
+    const own = ranges.filter((range) => range.index === index);
+    if (depthPrepass) {
+      gl.colorMask(false, false, false, false);
+      own.forEach(draw);
+      gl.colorMask(true, true, true, true);
+      gl.depthFunc(gl.LEQUAL);
+    }
+    setOpacity(opacity);
+    own.forEach(draw);
+    if (depthPrepass) gl.depthFunc(gl.LESS);
+  }
+  setOpacity(1);
+  gl.disable(gl.BLEND);
+}
+
 async function loadBundledBatteryModel() {
   if (batteryModelLoading) return;
   batteryModelLoading = true;
@@ -3337,7 +3439,18 @@ async function loadBundledBatteryModel() {
     }));
     applyParsedModel(parseObj(objText, parseMtl(mtlText)), 'NGEN_assets.obj', 'NGEN_assets.mtl');
     clearModelFlowPath();
-    if (IS_BATTERY_ROUTE) configureBatteryStack(batteryStackCount, true);
+    if (IS_BATTERY_ROUTE) {
+      // Opens on the smallest stack, slider at 3, already centered in view
+      // (switching stacking on is never animated, and the camera shouldn't
+      // drift down from the full stack's middle either).
+      configureBatteryStack(3, true);
+      batteryCenterY = batteryStack?.centerOffset ?? 0;
+      batteryCenterVelocity = 0;
+      // Then the stack assembles itself — the same animation as the panel's
+      // "Replay stack animation" (a replay only runs on a stack that's
+      // already switched on, hence the second call).
+      configureBatteryStack(3, true, batteryStackAnimation, true);
+    }
   } catch (error) {
     console.error(error);
     cubeModelStatus = "Couldn't load NGEN_assets.obj";
@@ -3359,6 +3472,9 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = []) {
     return;
   }
   batteryStack = createBatteryStack(parsed);
+  batteryFades = [];
+  batteryCenterY = 0;
+  batteryCenterVelocity = 0;
   batteryStackEnabled = false;
   batteryStackCount = 9;
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelPositionBuffer);
@@ -3744,7 +3860,8 @@ async function loadBundledDefaultModel() {
 
 // Drag-and-drop a .obj (+ optional .mtl) anywhere on the page as an
 // alternative to the file picker — same loadModelFromFiles path either way.
-if (!IS_HERO) {
+// Not on the embedded battery: file drops there belong to the host page.
+if (!IS_HERO && !IS_BATTERY_EMBED) {
 window.addEventListener('dragover', (event) => {
   event.preventDefault();
 });
@@ -3753,7 +3870,7 @@ window.addEventListener('drop', (event) => {
   const files = Array.from(event.dataTransfer?.files || []);
   if (files.length) loadModelFromFiles(files);
 });
-} // end if (!IS_HERO) — drag-and-drop model upload
+} // end if (!IS_HERO && !IS_BATTERY_EMBED) — drag-and-drop model upload
 
 // --- 3D flow arrows: draw one or more paths on the model's green parts, pulse follows each ---
 //
@@ -4377,7 +4494,11 @@ function getObjectSpacePan() {
   // applies on top of this regardless, so panning moves you relative to
   // wherever the target's currently centered rather than replacing it.
   const targetOwnsCentering = !modelFlowDrawMode && (cameraTargetActiveIndex !== null || !cameraTargetAtRest);
-  return targetOwnsCentering ? [0, 0, 0] : getModelViewOffset();
+  if (targetOwnsCentering) return [0, 0, 0];
+  const [x, y, z] = getModelViewOffset();
+  // Battery stack re-centering (see batteryCenterY) — in the same scaled
+  // units as the manual pan, hence the render scale.
+  return [x, y - batteryCenterY * CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent, z];
 }
 
 // Möller–Trumbore ray-triangle intersection. tris is a flat Float32Array of
@@ -4795,6 +4916,9 @@ function setFlowArrowObjectEnabled(objectIndex, enabled) {
 }
 
 function setModelFlowDraw(value) {
+  // No flow arrows on /battery — this is the only way into draw mode (the A
+  // key and the panel both come through here), so nothing can be drawn.
+  if (IS_BATTERY_ROUTE) return;
   modelFlowDrawMode = value;
   // Drawing and selecting are mutually exclusive — both interpret a canvas
   // click differently (start a new arrow vs. pick an existing one), so
@@ -5546,6 +5670,7 @@ function renderCubeFrame() {
   }
   const s = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
   const [offsetX, offsetY] = getCurrentCameraOffset(rx, ry, s);
+  stepBatteryCentering();
   const [panX, panY, panZ] = getObjectSpacePan();
 
   let modelView = mat4Translate(offsetX, offsetY, cameraOffsetZ);
@@ -5562,6 +5687,7 @@ function renderCubeFrame() {
   gl.uniform3f(uLightDir, Math.cos(elRad) * Math.cos(azRad), Math.sin(elRad), Math.cos(elRad) * Math.sin(azRad));
   gl.uniform1f(uLightIntensity, lightIntensityPercent / 100);
   gl.uniform1i(uBlueprint, blueprintEnabled ? 1 : 0);
+  gl.uniform1f(uOpacity, 1);
   const blueprintFillColor = BLUEPRINT_THEMES[shaderTheme].fill;
   gl.uniform3f(uBlueprintFillColor, blueprintFillColor[0], blueprintFillColor[1], blueprintFillColor[2]);
   gl.uniform3f(uBlueprintFillColorGreen, BLUEPRINT_FILL_COLOR_GREEN[0], BLUEPRINT_FILL_COLOR_GREEN[1], BLUEPRINT_FILL_COLOR_GREEN[2]);
@@ -5691,7 +5817,8 @@ function renderCubeFrame() {
   // customModelVertexCount is 0 until a model's actually loaded (see
   // customModelReady/applyParsedModel), so this is a no-op draw call rather
   // than needing an explicit readiness guard — nothing renders until then.
-  gl.drawArrays(gl.TRIANGLES, 0, customModelVertexCount);
+  if (batteryFades.length > 0) drawBatteryRanges(gl.TRIANGLES, batteryVertexRanges, (opacity) => gl.uniform1f(uOpacity, opacity), true);
+  else gl.drawArrays(gl.TRIANGLES, 0, customModelVertexCount);
 
   // Camera-target bounding-box overlay (see showCameraTargetBoxes/
   // buildBoxGeometry above) — independent of blueprint mode, since it's a
@@ -5824,7 +5951,8 @@ function renderCubeFrame() {
       gl.enableVertexAttribArray(aLineColor);
       gl.vertexAttribPointer(aLineColor, 3, gl.FLOAT, false, 0, 0);
 
-      gl.drawArrays(gl.LINES, 0, customModelLineVertexCount);
+      if (batteryFades.length > 0) drawBatteryRanges(gl.LINES, batteryLineRanges, (opacity) => gl.uniform1f(uLineAlpha, opacity), false);
+      else gl.drawArrays(gl.LINES, 0, customModelLineVertexCount);
     }
 
     // Draw every finalized arrow, plus the in-progress drag (if any), as a
@@ -6080,7 +6208,7 @@ function renderCubeFrame() {
     }
   }
 
-  if (!IS_HERO) drawAxisGizmo(rx, ry);
+  if (!IS_HERO && !IS_PREVIEW_ROUTE) drawAxisGizmo(rx, ry); // hidden on the preview routes, so not worth drawing
 }
 
 // Dynamic resolution scaling: canvas's WebGL backing store renders at up to
@@ -6759,7 +6887,9 @@ function recordAndDisplayFrameTiming(now) {
     perfMinMs = Math.min(perfMinMs, avgFrameMs);
     perfMaxMs = Math.max(perfMaxMs, avgFrameMs);
     updateDynamicRenderScale(avgFrameMs);
-    if (!IS_HERO) {
+    // Hidden on the preview routes — skipped there rather than kept up to
+    // date behind visibility: hidden.
+    if (!IS_HERO && !IS_PREVIEW_ROUTE) {
       perfMonitorEl.textContent =
         `${Math.round(renderScale * 100)}% res\n` +
         `${avgFrameMs.toFixed(1)} ms (${perfMinMs.toFixed(1)}–${perfMaxMs.toFixed(1)})\n` +
@@ -6777,7 +6907,32 @@ function recordAndDisplayFrameTiming(now) {
   }
 }
 
+// The embedded battery (IS_BATTERY_EMBED) is one section of a long page and
+// spends most of its life scrolled out of view. Rendering then would be
+// pure waste — a full WebGL frame, 60 times a second, that nobody sees — so
+// the loop stops scheduling itself while the canvas is off screen and
+// starts again when it comes back (see the IntersectionObserver below).
+// Nothing accumulates while it's stopped: the stack animation and the
+// springs all work from timestamps, so they simply pick up from wherever
+// they should be by then.
+let renderLoopRunning = false;
+let canvasOnScreen = true;
+
+function startRenderLoop() {
+  if (renderLoopRunning) return;
+  renderLoopRunning = true;
+  // Otherwise the time spent stopped would count as one enormous frame and
+  // drag the dynamic render scale down for no reason.
+  perfLastFrameTime = performance.now();
+  requestAnimationFrame(renderLoop);
+}
+
 function renderLoop(now) {
+  if (!canvasOnScreen) {
+    renderLoopRunning = false;
+    return;
+  }
+  renderLoopRunning = true;
   if (videoRecording || pngSequenceExporting) {
     // captureVideo()/capturePngSequence() own canvas.width/height and
     // cubeParallaxX/Y exclusively for the whole export (see their own
@@ -6796,6 +6951,18 @@ function renderLoop(now) {
 window.addEventListener('resize', resize);
 resize();
 renderLoop();
+if (IS_BATTERY_EMBED) {
+  // A little margin so the first frame is already drawn by the time the
+  // section actually scrolls into view.
+  new IntersectionObserver(([entry]) => {
+    canvasOnScreen = entry.isIntersecting;
+    if (canvasOnScreen) startRenderLoop();
+  }, { rootMargin: '200px 0px' }).observe(canvas);
+  // The host page can resize this section without the window itself
+  // resizing (a layout change, a collapsing sibling), which 'resize' alone
+  // would never report.
+  new ResizeObserver(resize).observe(canvas);
+}
 if (IS_BATTERY_ROUTE) loadBundledBatteryModel();
 else loadBundledDefaultModel();
 

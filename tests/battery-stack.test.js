@@ -126,6 +126,9 @@ test('new slaves fly along positive X into place with matching wireframes and bo
   assert.ok(quarter.objects[2].center[0] - source.objects[2].center[0] < initialSlide * .75, 'Insertion starts promptly without easing in');
   const halfwaySlide = initialSlide * (1 - Math.SQRT1_2);
   assert.ok(Math.abs(halfway.objects[2].center[0] - source.objects[2].center[0] - halfwaySlide) < 1e-7, 'Insertion eases out');
+  assert.deepEqual(entry.fades.map(fade => fade.index), [2], 'Only the arriving slave fades');
+  assert.ok(entry.fades[0].opacity < 1e-9, 'It appears fully transparent');
+  assert.ok(Math.abs(halfway.fades[0].opacity - Math.SQRT1_2) < 1e-9, 'Opacity rises with the slide');
   assert.equal(halfway.objects[2].bounds.minY, source.objects[2].bounds.minY, 'Insertion stays at the cleared slot height');
   const vertex = Array.from(halfway.objectIndex).indexOf(2);
   for (const axis of [0, 2]) {
@@ -141,6 +144,7 @@ test('new slaves fly along positive X into place with matching wireframes and bo
   assert.ok(threeQuarter.objects[2].center[0] - source.objects[2].center[0] < initialSlide * .25, 'Insertion slows near its destination');
   const settled = stack.update(550);
   assert.deepEqual(settled.objects[2].center, Array.from(source.objects[2].center));
+  assert.deepEqual(settled.fades, [], 'A slave in its slot is solid');
   assert.equal(stack.animating, false);
   assert.equal(stack.update(600), null);
 });
@@ -160,6 +164,9 @@ test('removed slaves replay their entry backwards along positive X before the ma
   const exitOffset = slide * (1 - Math.SQRT1_2);
   assert.ok(quarter.objects[7].center[0] - source.objects[7].center[0] < slide * .1, 'The exit starts gently, as the entry ends');
   assert.ok(Math.abs(departure.objects[7].center[0] - source.objects[7].center[0] - exitOffset) < 1e-7, 'The top slave mirrors the insertion curve');
+  assert.deepEqual(start.fades, [], 'Slaves waiting their turn stay solid');
+  assert.ok(Math.abs(departure.fades.find(fade => fade.index === 7).opacity - Math.SQRT1_2) < 1e-9, 'Opacity falls with the slide');
+  assert.ok(departure.fades.every(fade => fade.index >= 5), 'Only slaves already on their way out fade');
   assert.equal(departure.objects[1].center[0], source.objects[1].center[0], 'Bottom middle slave stays in place');
   assert.equal(departure.objects[8].center[1], before.objects[8].center[1], 'The resting master waits for the slave beneath it');
   const vertex = Array.from(departure.objectIndex).indexOf(7);
@@ -169,6 +176,8 @@ test('removed slaves replay their entry backwards along positive X before the ma
   assert.equal(departure.objects[7].center[1], source.objects[7].center[1]);
   assert.equal(departure.objects[7].center[2], source.objects[7].center[2]);
   assertMasterClear(departure);
+  const nearlyOut = stack.update(249);
+  assert.ok(nearlyOut.fades.find(fade => fade.index === 7).opacity < .02, 'It is transparent by the time it is removed');
   const firstRemoved = stack.update(250);
   assert.equal(new Set(firstRemoved.objectIndex).has(7), false, 'The uppermost slave leaves first');
   assert.equal(new Set(firstRemoved.objectIndex).has(2), true, 'Lower slaves leave later');
@@ -290,6 +299,7 @@ function createRendererHarness(stack) {
     let customModelLinePositionsCache, customModelLineIsGreenCache;
     let greenTriPositionsCache, greenTriObjectIndexCache;
     let batteryGreenTriangleRanges = [], batteryAllTrianglesGreen = false;
+    let batteryVertexRanges, batteryLineRanges, batteryFades;
     ${functionSource('updateBatteryStackGeometry')}
     ({update: updateBatteryStackGeometry, state: () => ({
       positions: customModelPositionsCache, flags: customModelIsGreenCache,
@@ -359,7 +369,7 @@ test('reversing during insertion sends slaves back out from their current pose w
         for (const index of new Set(current.objectIndex)) {
           current.objects[index].center.forEach((value, axis) => assert.ok(Math.abs(value - before.objects[index].center[axis]) < 1e-9, 'Changing direction does not jump a visible module'));
         }
-        for (let elapsed = 5; elapsed <= 600; elapsed += 5) {
+        for (let elapsed = 5; elapsed <= 800; elapsed += 5) {
           const next = stack.update(100 + reverseAt + elapsed) || current;
           for (const index of new Set(next.objectIndex)) {
             if (index > lower - 2 && index < 8) assert.ok(next.objects[index].center[0] >= current.objects[index].center[0] - 1e-9, 'Outgoing slaves only ever move toward positive X');
@@ -441,24 +451,37 @@ test('another decrement during a departure keeps the exit under way and adds no 
   assert.equal(new Set(settled.objectIndex).size, 7);
 });
 
-test('a master already descending never stalls for further removals', () => {
-  for (const changeAt of [260, 300, 380, 500]) {
-    const stack = createBatteryStack(source);
-    stack.configure(9, true, false, 0); stack.update(0);
-    stack.configure(8, true, true, 100);
-    let current = stack.update(changeAt);
-    stack.configure(5, true, true, changeAt);
-    for (let time = changeAt + 5; time <= changeAt + 300; time += 5) {
-      const next = stack.update(time);
-      assert.ok(next.objects[8].center[1] < current.objects[8].center[1], 'The master keeps descending on every frame');
-      for (const index of new Set(next.objectIndex)) {
-        if (index > 3 && index < 8) assert.ok(next.objects[index].center[0] >= current.objects[index].center[0] - 1e-9);
+test('a master caught in flight keeps moving while every removed slave still plays its full exit', () => {
+  const pitch = source.objects[2].bounds.minY - source.objects[1].bounds.minY;
+  for (const [from, first, then] of [[9, 8, 5], [9, 8, 3], [3, 9, 3], [4, 9, 5], [9, 6, 3]]) {
+    for (let changeAt = 110; changeAt <= 700; changeAt += 10) {
+      const stack = createBatteryStack(source);
+      stack.configure(from, true, false, 0);
+      let current = stack.update(0);
+      stack.configure(first, true, true, 100);
+      current = stack.update(changeAt) || current;
+      stack.configure(then, true, true, changeAt);
+      const targetY = source.objects[8].center[1] + (then - 9) * pitch;
+      let held = 0;
+      for (let time = changeAt + 5; time <= changeAt + 800; time += 5) {
+        const next = stack.update(time) || current;
+        const visible = new Set(next.objectIndex);
+        const master = next.objects[8], top = Math.max(...[...visible].filter(index => index !== 8).map(index => next.objects[index].bounds.maxY));
+        // The frame on which a slave vanishes may still show the master where it rested on it.
+        const hanging = stack.animating && master.center[1] > targetY + 1e-6 && master.bounds.minY - top > .03
+          && master.center[1] >= current.objects[8].center[1];
+        held = hanging ? held + 1 : 0;
+        assert.ok(held < 2, 'The master never hangs in mid-air');
+        for (const index of new Set(current.objectIndex)) {
+          if (visible.has(index)) continue;
+          const travelled = current.objects[index].center[0] - source.objects[index].center[0];
+          assert.ok(travelled > pitch * 1.4 * .6, 'A slave only disappears at the end of its slide');
+        }
+        assertMasterClear(next);
+        current = next;
       }
-      assertMasterClear(next);
-      current = next;
+      assert.equal(stack.animating, false);
+      assert.equal(new Set(current.objectIndex).size, then);
     }
-    current = stack.update(changeAt + 600) || current;
-    assert.equal(stack.animating, false);
-    assert.equal(new Set(current.objectIndex).size, 5);
   }
 });

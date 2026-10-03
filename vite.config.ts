@@ -31,13 +31,15 @@ export default defineConfig({
       // same story again — same bundle, not tree-shaken (the info card
       // ships as-is), just its own HTML demonstrating the sticky-section
       // embed structure. battery.html is index.html plus data-battery="true"
-      // (see IS_BATTERY_ROUTE in main.js).
+      // (see IS_BATTERY_ROUTE in main.js); battery-preview.html is that plus
+      // data-preview="true", the same panel-free treatment as scroll-preview.
       input: {
         main: path.resolve(__dirname, "index.html"),
         scroll: path.resolve(__dirname, "scroll.html"),
         scrollPreview: path.resolve(__dirname, "scroll-preview.html"),
         scrollEmbed: path.resolve(__dirname, "scroll-embed.html"),
         battery: path.resolve(__dirname, "battery.html"),
+        batteryPreview: path.resolve(__dirname, "battery-preview.html"),
       },
     },
   },
