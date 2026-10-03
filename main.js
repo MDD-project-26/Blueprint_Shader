@@ -3256,6 +3256,8 @@ let batteryStackEnabled = false;
 let batteryStackCount = 9;
 let batteryStackAnimation = true;
 let batteryModelLoading = false;
+let batteryGreenTriangleRanges = [];
+let batteryAllTrianglesGreen = false;
 
 function configureBatteryStack(count = batteryStackCount, enabled = batteryStackEnabled, animation = batteryStackAnimation, replay = false) {
   if (!batteryStack) return;
@@ -3273,12 +3275,13 @@ function configureBatteryStack(count = batteryStackCount, enabled = batteryStack
 function updateBatteryStackGeometry() {
   const geometry = batteryStack?.update(performance.now());
   if (!geometry) return;
-  const upload = (buffer, values) => {
+  const upload = (buffer, values, reuse = false) => {
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, values, gl.DYNAMIC_DRAW);
+    if (reuse) gl.bufferSubData(gl.ARRAY_BUFFER, 0, values);
+    else gl.bufferData(gl.ARRAY_BUFFER, values, gl.DYNAMIC_DRAW);
   };
-  upload(customModelPositionBuffer, geometry.positions);
-  upload(customModelLineBuffer, geometry.linePositions);
+  upload(customModelPositionBuffer, geometry.positions, !geometry.membershipChanged);
+  upload(customModelLineBuffer, geometry.linePositions, !geometry.membershipChanged);
   if (geometry.membershipChanged) {
     upload(customModelNormalBuffer, geometry.normals);
     upload(customModelColorBuffer, geometry.colors);
@@ -3294,14 +3297,31 @@ function updateBatteryStackGeometry() {
   customModelIsGreenCache = geometry.isGreen;
   customModelLinePositionsCache = geometry.linePositions;
   customModelObjects = geometry.objects;
-  const triangles = [], owners = [];
-  for (let i = 0; i < geometry.isGreen.length; i += 3) {
-    if (!geometry.isGreen[i]) continue;
-    triangles.push(...geometry.positions.subarray(i * 3, i * 3 + 9));
-    owners.push(geometry.objectIndex[i]);
+  if (geometry.membershipChanged) {
+    const owners = [];
+    batteryGreenTriangleRanges = [];
+    let length = 0;
+    for (let i = 0; i < geometry.isGreen.length; i += 3) {
+      if (!geometry.isGreen[i]) continue;
+      owners.push(geometry.objectIndex[i]);
+      const start = i * 3;
+      const previous = batteryGreenTriangleRanges.at(-1);
+      if (previous && previous.start + previous.length === start) previous.length += 9;
+      else batteryGreenTriangleRanges.push({ start, length: 9, offset: length });
+      length += 9;
+    }
+    greenTriObjectIndexCache = new Int32Array(owners);
+    batteryAllTrianglesGreen = length === geometry.positions.length;
+    if (!batteryAllTrianglesGreen) greenTriPositionsCache = new Float32Array(length);
   }
-  greenTriPositionsCache = new Float32Array(triangles);
-  greenTriObjectIndexCache = owners;
+  if (batteryAllTrianglesGreen) {
+    // The NGEN asset is entirely green: raycast directly against the live mesh.
+    greenTriPositionsCache = geometry.positions;
+  } else {
+    for (const range of batteryGreenTriangleRanges) {
+      greenTriPositionsCache.set(geometry.positions.subarray(range.start, range.start + range.length), range.offset);
+    }
+  }
   if (geometry.membershipChanged) recomputeModelFlowCoords();
 }
 
