@@ -54,7 +54,7 @@ export function createBatteryStack(source) {
   const selected = () => enabled ? [parts[0], ...parts.slice(1, count - 1), master] : parts;
   const masterOffset = total => (total - 9) * pitch;
 
-  // One forward timeline per change: every moving part uses the same ease-out.
+  // The master eases to its target; only newly added slaves slide into place.
   // Existing slides retain their elapsed phase when the destination changes.
   function sample(now) {
     if (!motion?.running) return;
@@ -64,14 +64,14 @@ export function createBatteryStack(source) {
     motion.running = time < motion.duration;
     const visible = new Set();
     for (const track of motion.tracks) {
-      const progress = easeOut(clamp((time - track.start) / track.duration));
+      const elapsed = Math.max(0, time - track.start);
+      const progress = easeOut(clamp(elapsed / track.duration));
       const y = track.lowY + (track.highY - track.lowY) * progress;
       const x = track.lowX + (track.highX - track.lowX) * progress;
       if (offsets.get(track.index) !== y || slideOffsets.get(track.index) !== x) dirty = true;
       offsets.set(track.index, y);
       slideOffsets.set(track.index, x);
-      const visibleNow = track.leaving ? time < track.start + track.duration - 1e-7
-        : !track.entering || time >= track.start - 1e-7;
+      const visibleNow = !track.entering || time >= track.start - 1e-7;
       if (visibleNow) visible.add(track.index);
     }
     if (visible.size !== active.size || [...visible].some(index => !active.has(index))) {
@@ -125,33 +125,10 @@ export function createBatteryStack(source) {
         if (!previous || previous.highX !== targetX || previous.lowX === targetX || motion.time < previous.start) return null;
         return { ...previous, start: previous.start - motion.time };
       };
-      const departures = [];
-      let masterDelay = 0;
-      // Schedule each exit to finish before the eased master reaches that slot.
-      // A partly completed exit keeps its phase, rather than starting over.
-      if (!growing) {
-        for (const part of parts.slice(1, 8)) {
-          if (!active.has(part.index) || wanted.has(part.index)) continue;
-          const continued = continuingSlide(part.index, slideDistance);
-          const currentX = slideOffsets.get(part.index);
-          const length = continued ? Math.max(0, continued.start + continued.duration)
-            : Math.max(1, slideDuration * clamp(1 - currentX / slideDistance));
-          const top = part.bounds.maxY + offsets.get(part.index) - seam;
-          const clearanceTime = currentY > targetY
-            ? inverseEaseOut(clamp((master.bounds.minY + currentY - top) / (currentY - targetY))) * masterDuration : 0;
-          departures.push({ part, continued, length, clearanceTime, currentX });
-          masterDelay = Math.max(masterDelay, length - clearanceTime);
-        }
-      }
-      tracks.push({ index: master.index, start: masterDelay, duration: masterDuration,
+      // Removed slaves disappear immediately; the master descends without a wait.
+      tracks.push({ index: master.index, start: 0, duration: masterDuration,
         lowY: currentY, highY: targetY, lowX: 0, highX: 0 });
-      let duration = masterDelay + masterDuration;
-      for (const { part, continued, length, clearanceTime, currentX } of departures) {
-        const track = continued || { index: part.index, start: masterDelay + clearanceTime - length, duration: length,
-          lowY: offsets.get(part.index), highY: offsets.get(part.index), lowX: currentX, highX: slideDistance };
-        tracks.push({ ...track, entering: false, leaving: true });
-        duration = Math.max(duration, track.start + track.duration);
-      }
+      let duration = masterDuration;
       for (const part of parts.slice(0, 8)) {
         const visible = active.has(part.index);
         const retained = wanted.has(part.index);
@@ -166,7 +143,7 @@ export function createBatteryStack(source) {
           const track = continuingSlide(part.index, 0) || { index: part.index, start,
             duration: Math.max(1, slideDuration * clamp(currentX / slideDistance)),
             lowY: 0, highY: 0, lowX: currentX, highX: 0 };
-          tracks.push({ ...track, entering, leaving: false });
+          tracks.push({ ...track, entering });
           duration = Math.max(duration, track.start + track.duration);
         } else {
           tracks.push({ index: part.index, start: 0, duration: masterDuration,
