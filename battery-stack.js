@@ -54,7 +54,9 @@ export function createBatteryStack(source) {
   const selected = () => enabled ? [parts[0], ...parts.slice(1, count - 1), master] : parts;
   const masterOffset = total => (total - 9) * pitch;
 
-  // The master eases to its target; only newly added slaves slide into place.
+  // The master eases to its target. Added slaves slide into place behind it;
+  // removed slaves play that slide backwards ahead of it, accelerating out along
+  // +X and vanishing at full speed, where an entering slave first appears.
   // Existing slides retain their elapsed phase when the destination changes.
   function sample(now) {
     if (!motion?.running) return;
@@ -65,13 +67,15 @@ export function createBatteryStack(source) {
     const visible = new Set();
     for (const track of motion.tracks) {
       const elapsed = Math.max(0, time - track.start);
-      const progress = easeOut(clamp(elapsed / track.duration));
+      const phase = clamp(elapsed / track.duration);
+      const progress = track.leaving ? 1 - easeOut(1 - phase) : easeOut(phase);
       const y = track.lowY + (track.highY - track.lowY) * progress;
       const x = track.lowX + (track.highX - track.lowX) * progress;
       if (offsets.get(track.index) !== y || slideOffsets.get(track.index) !== x) dirty = true;
       offsets.set(track.index, y);
       slideOffsets.set(track.index, x);
-      const visibleNow = !track.entering || time >= track.start - 1e-7;
+      const visibleNow = track.leaving ? time < track.start + track.duration - 1e-7
+        : !track.entering || time >= track.start - 1e-7;
       if (visibleNow) visible.add(track.index);
     }
     if (visible.size !== active.size || [...visible].some(index => !active.has(index))) {
@@ -125,10 +129,40 @@ export function createBatteryStack(source) {
         if (!previous || previous.highX !== targetX || previous.lowX === targetX || motion.time < previous.start) return null;
         return { ...previous, start: previous.start - motion.time };
       };
-      // Removed slaves disappear immediately; the master descends without a wait.
-      tracks.push({ index: master.index, start: 0, duration: masterDuration,
+      // Each exit ends as the eased master reaches that slot, so the slaves peel
+      // off from the top down. A resting master waits for the slave beneath it;
+      // one already in flight never stalls, and the exits shorten to fit instead.
+      const flight = !motion?.replay && motion?.running && motion.tracks.find(track => track.index === master.index);
+      const masterMoving = !!flight && flight.lowY !== flight.highY
+        && motion.time > flight.start && motion.time < flight.start + flight.duration;
+      const departures = [];
+      let masterDelay = 0;
+      for (const part of parts.slice(1, 8)) {
+        if (!active.has(part.index) || wanted.has(part.index)) continue;
+        // A slave caught mid-slide resumes the exit curve from where it is.
+        const currentX = slideOffsets.get(part.index);
+        const phase = currentX > 0 ? 1 - inverseEaseOut(clamp(1 - currentX / slideDistance)) : 0;
+        const remaining = slideDuration * (1 - phase);
+        const top = part.bounds.maxY + offsets.get(part.index) - seam;
+        const clearance = targetY < currentY
+          ? inverseEaseOut(clamp((master.bounds.minY + currentY - top) / (currentY - targetY))) * masterDuration : 0;
+        departures.push({ part, phase, remaining, clearance });
+        if (!masterMoving) masterDelay = Math.max(masterDelay, remaining - clearance);
+      }
+      tracks.push({ index: master.index, start: masterDelay, duration: masterDuration,
         lowY: currentY, highY: targetY, lowX: 0, highX: 0 });
-      let duration = masterDuration;
+      let duration = masterDelay + masterDuration;
+      for (const { part, phase, remaining, clearance } of departures) {
+        const end = masterDelay + clearance;
+        const length = Math.min(remaining, end);
+        // No time left before the master arrives: the slave is simply removed.
+        if (length < 1) continue;
+        const span = length / (1 - phase);
+        const y = offsets.get(part.index);
+        tracks.push({ index: part.index, start: (phase > 0 ? 0 : end - length) - phase * span, duration: span,
+          lowY: y, highY: y, lowX: 0, highX: slideDistance, leaving: true });
+        duration = Math.max(duration, end);
+      }
       for (const part of parts.slice(0, 8)) {
         const visible = active.has(part.index);
         const retained = wanted.has(part.index);

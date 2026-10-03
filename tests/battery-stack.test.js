@@ -145,47 +145,77 @@ test('new slaves fly along positive X into place with matching wireframes and bo
   assert.equal(stack.update(600), null);
 });
 
-test('removed slaves disappear immediately while the master starts descending', () => {
+test('removed slaves replay their entry backwards along positive X before the master descends', () => {
   const stack = createBatteryStack(source);
   stack.configure(9, true, false, 0);
   const before = stack.update(0);
   stack.configure(3, true, true, 100);
-  const removal = stack.update(100);
-  assert.deepEqual([...new Set(removal.objectIndex)], [0, 1, 8]);
-  assert.equal(removal.objects[8].center[1], before.objects[8].center[1], 'The master starts from its current height');
-  const descending = stack.update(175);
-  assert.ok(descending.objects[8].center[1] < before.objects[8].center[1], 'There is no exit delay');
-  for (let index = 1; index < 8; index++) assert.deepEqual(descending.objects[index].center, before.objects[index].center, 'Slaves do not slide out');
-  assertMasterClear(descending);
-  const settled = stack.update(400);
+  const start = stack.update(100);
+  assert.equal(new Set(start.objectIndex).size, 9, 'Nothing disappears on the change itself');
+  assert.deepEqual(start.objects.map(part => part.center), before.objects.map(part => part.center), 'Nothing jumps');
+  const quarter = stack.update(137.5);
+  const departure = stack.update(175);
+  const pitch = source.objects[2].bounds.minY - source.objects[1].bounds.minY;
+  const slide = pitch * 1.4;
+  const exitOffset = slide * (1 - Math.SQRT1_2);
+  assert.ok(quarter.objects[7].center[0] - source.objects[7].center[0] < slide * .1, 'The exit starts gently, as the entry ends');
+  assert.ok(Math.abs(departure.objects[7].center[0] - source.objects[7].center[0] - exitOffset) < 1e-7, 'The top slave mirrors the insertion curve');
+  assert.equal(departure.objects[1].center[0], source.objects[1].center[0], 'Bottom middle slave stays in place');
+  assert.equal(departure.objects[8].center[1], before.objects[8].center[1], 'The resting master waits for the slave beneath it');
+  const vertex = Array.from(departure.objectIndex).indexOf(7);
+  assert.ok(Math.abs(departure.positions[vertex * 3] - departure.basePositions[vertex * 3] - exitOffset) < 1e-6);
+  const edge = departure.lineObjectIndex.indexOf(7);
+  for (const endpoint of [edge * 6, edge * 6 + 3]) assert.ok(Math.abs(departure.linePositions[endpoint] - departure.baseLinePositions[endpoint] - exitOffset) < 1e-6);
+  assert.equal(departure.objects[7].center[1], source.objects[7].center[1]);
+  assert.equal(departure.objects[7].center[2], source.objects[7].center[2]);
+  assertMasterClear(departure);
+  const firstRemoved = stack.update(250);
+  assert.equal(new Set(firstRemoved.objectIndex).has(7), false, 'The uppermost slave leaves first');
+  assert.equal(new Set(firstRemoved.objectIndex).has(2), true, 'Lower slaves leave later');
+  const settled = stack.update(550);
   assert.equal(new Set(settled.objectIndex).size, 3);
   assert.equal(stack.animating, false);
-  stack.configure(4, true, true, 600); stack.update(925);
-  stack.configure(4, false, false, 926);
-  const restored = stack.update(926);
+  assertMasterClear(settled);
+  stack.configure(4, true, true, 600); stack.update(1050);
+  stack.configure(4, false, false, 1051);
+  const restored = stack.update(1051);
   assert.deepEqual(Array.from(restored.positions), Array.from(source.positions));
   assert.deepEqual(Array.from(restored.linePositions), Array.from(source.linePositions));
 });
 
-test('every downward count change hides removed slaves and eases the master directly to its target', () => {
+test('every downward count change slides each slave out just before the eased master reaches its slot', () => {
   const pitch = source.objects[2].bounds.minY - source.objects[1].bounds.minY;
+  const seam = source.objects[7].bounds.maxY - source.objects[8].bounds.minY;
+  const clamp = value => Math.max(0, Math.min(1, value));
   for (let lower = 3; lower < 9; lower++) {
     for (let upper = lower + 1; upper <= 9; upper++) {
       const stack = createBatteryStack(source);
       stack.configure(upper, true, false, 0);
-      const before = stack.update(0);
-      const expectedVisible = [0, ...Array.from({length: lower - 2}, (_, i) => i + 1), 8];
+      let geometry = stack.update(0);
+      const startY = geometry.objects[8].bounds.minY;
+      const targetY = source.objects[8].bounds.minY + (lower - 9) * pitch;
       stack.configure(lower, true, true, 100);
-      for (let elapsed = 0; elapsed <= 300; elapsed += 5) {
-        const geometry = stack.update(100 + elapsed);
-        assert.deepEqual([...new Set(geometry.objectIndex)], expectedVisible, 'Removed slaves stay hidden throughout descent');
-        const expectedY = before.objects[8].center[1] - (upper - lower) * pitch * Math.sin(Math.PI * elapsed / 600);
-        assert.ok(Math.abs(geometry.objects[8].center[1] - expectedY) < 1e-7, 'The master retains its 300ms ease-out');
-        for (let index = 0; index < 8; index++) assert.deepEqual(geometry.objects[index].center, before.objects[index].center, 'Only the master moves');
+      for (let time = 0; time <= 450; time += 5) {
+        geometry = stack.update(100 + time) || geometry;
+        const expectedY = startY + (targetY - startY) * Math.sin(Math.PI * clamp((time - 150) / 300) / 2);
+        assert.ok(Math.abs(geometry.objects[8].bounds.minY - expectedY) < 1e-7, 'The master keeps its 300ms ease-out once the top slave has left');
+        const visible = new Set(geometry.objectIndex);
+        for (let index = lower - 1; index <= upper - 2; index++) {
+          const top = source.objects[index].bounds.maxY - seam;
+          const start = Math.asin(clamp((startY - top) / (startY - targetY))) * 2 / Math.PI * 300;
+          const elapsed = time - start;
+          const expectedX = pitch * 1.4 * (1 - Math.cos(Math.PI * clamp(elapsed / 150) / 2));
+          assert.ok(Math.abs(geometry.objects[index].center[0] - source.objects[index].center[0] - expectedX) < 1e-6, 'Every slave accelerates out along positive X');
+          assert.equal(visible.has(index), elapsed < 150 - 1e-7, 'Slave remains visible until its slide finishes');
+          assert.equal(geometry.objects[index].center[1], source.objects[index].center[1], 'Exit stays at the same slot height');
+          assert.equal(geometry.objects[index].center[2], source.objects[index].center[2], 'Exit stays on the X axis');
+        }
+        for (let index = 0; index < lower - 1; index++) assert.deepEqual(geometry.objects[index].center, Array.from(source.objects[index].center), 'Retained slaves do not move');
         assertMasterClear(geometry);
       }
+      assert.equal(new Set(geometry.objectIndex).size, lower);
       assert.equal(stack.animating, false);
-      assert.equal(stack.update(450), null);
+      assert.equal(stack.update(600), null);
     }
   }
 });
@@ -316,7 +346,7 @@ test('mixed-material raycast caches contain only green triangles and stay curren
   }
 });
 
-test('reversing during insertion hides removed slaves without moving the retained modules', () => {
+test('reversing during insertion sends slaves back out from their current pose without a jump', () => {
   for (let lower = 3; lower < 9; lower++) {
     for (let upper = lower + 1; upper <= 9; upper++) {
       for (const reverseAt of [50, 175, 325, 425]) {
@@ -325,12 +355,15 @@ test('reversing during insertion hides removed slaves without moving the retaine
         stack.configure(upper, true, true, 100);
         const before = stack.update(100 + reverseAt);
         stack.configure(lower, true, true, 100 + reverseAt);
-        let current = stack.update(100 + reverseAt);
-        for (const index of new Set(current.objectIndex)) assert.deepEqual(current.objects[index].center, before.objects[index].center, 'Changing direction does not jump a retained module');
-        assert.equal(new Set(current.objectIndex).size, lower, 'Removed modules disappear immediately');
+        let current = stack.update(100 + reverseAt) || before;
+        for (const index of new Set(current.objectIndex)) {
+          current.objects[index].center.forEach((value, axis) => assert.ok(Math.abs(value - before.objects[index].center[axis]) < 1e-9, 'Changing direction does not jump a visible module'));
+        }
         for (let elapsed = 5; elapsed <= 600; elapsed += 5) {
           const next = stack.update(100 + reverseAt + elapsed) || current;
-          assert.equal(new Set(next.objectIndex).size, lower);
+          for (const index of new Set(next.objectIndex)) {
+            if (index > lower - 2 && index < 8) assert.ok(next.objects[index].center[0] >= current.objects[index].center[0] - 1e-9, 'Outgoing slaves only ever move toward positive X');
+          }
           current = next;
           assertMasterClear(current);
         }
@@ -341,7 +374,7 @@ test('reversing during insertion hides removed slaves without moving the retaine
   }
 });
 
-test('repeated slider values preserve timing and adding removed slaves keeps the master continuous', () => {
+test('repeated slider values preserve timing and reversing an exit back in is continuous', () => {
   const stack = createBatteryStack(source);
   stack.configure(3, true, false, 0); stack.update(0);
   stack.configure(9, true, true, 100);
@@ -360,9 +393,8 @@ test('repeated slider values preserve timing and adding removed slaves keeps the
   for (const index of new Set(goingOut.objectIndex)) {
     assert.deepEqual(sameFrame.objects[index].center, goingOut.objects[index].center, 'Retained modules do not jump');
   }
-  for (const index of new Set(sameFrame.objectIndex)) {
-    if (index > 1 && index < 8) assert.ok(sameFrame.objects[index].center[0] > source.objects[index].center[0], 'Removed slaves return from positive X');
-  }
+  assert.equal(new Set(sameFrame.objectIndex).size, 9, 'Departing slaves are still present to return');
+  assert.ok(sameFrame.objects[7].center[0] > source.objects[7].center[0], 'The departing slave returns from where it had reached');
   assertMasterClear(sameFrame);
   const backIn = stack.update(1200);
   assert.deepEqual(Array.from(backIn.positions), Array.from(settled.positions));
@@ -388,19 +420,45 @@ test('new destinations during a partial movement settle at the requested count a
   assert.equal(stack.animating, false);
 });
 
-test('rapid decrements hide modules immediately and preserve the master position', () => {
+test('another decrement during a departure keeps the exit under way and adds no extra wait', () => {
   const stack = createBatteryStack(source);
-  stack.configure(9, true, false, 0); stack.update(0);
+  stack.configure(9, true, false, 0);
+  const before = stack.update(0);
   stack.configure(8, true, true, 100);
-  const descending = stack.update(150);
+  const departing = stack.update(150);
   stack.configure(7, true, true, 150);
-  const continued = stack.update(150);
-  assert.equal(new Set(continued.objectIndex).size, 7);
-  assert.deepEqual(continued.objects[8].center, descending.objects[8].center, 'The master does not jump on another decrement');
-  const later = stack.update(175);
-  assert.ok(later.objects[8].center[1] < continued.objects[8].center[1], 'Descent continues immediately');
-  assertMasterClear(later);
-  const settled = stack.update(450);
+  const continued = stack.update(150) || departing;
+  assert.equal(new Set(continued.objectIndex).size, 9);
+  assert.ok(Math.abs(continued.objects[7].center[0] - departing.objects[7].center[0]) < 1e-9, 'The departing slave keeps its current position');
+  const mid = stack.update(200);
+  assert.ok(mid.objects[7].center[0] > continued.objects[7].center[0], 'Its exit carries on rather than starting over');
+  const afterExit = stack.update(275);
+  assert.equal(new Set(afterExit.objectIndex).has(7), false, 'The original departure still finishes at 250ms');
+  assert.ok(afterExit.objects[8].center[1] < before.objects[8].center[1], 'The master descends without another full exit delay');
+  assertMasterClear(afterExit);
+  const settled = stack.update(600);
   assert.equal(stack.animating, false);
   assert.equal(new Set(settled.objectIndex).size, 7);
+});
+
+test('a master already descending never stalls for further removals', () => {
+  for (const changeAt of [260, 300, 380, 500]) {
+    const stack = createBatteryStack(source);
+    stack.configure(9, true, false, 0); stack.update(0);
+    stack.configure(8, true, true, 100);
+    let current = stack.update(changeAt);
+    stack.configure(5, true, true, changeAt);
+    for (let time = changeAt + 5; time <= changeAt + 300; time += 5) {
+      const next = stack.update(time);
+      assert.ok(next.objects[8].center[1] < current.objects[8].center[1], 'The master keeps descending on every frame');
+      for (const index of new Set(next.objectIndex)) {
+        if (index > 3 && index < 8) assert.ok(next.objects[index].center[0] >= current.objects[index].center[0] - 1e-9);
+      }
+      assertMasterClear(next);
+      current = next;
+    }
+    current = stack.update(changeAt + 600) || current;
+    assert.equal(stack.animating, false);
+    assert.equal(new Set(current.objectIndex).size, 5);
+  }
 });
