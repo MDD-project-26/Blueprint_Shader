@@ -18,6 +18,8 @@
     "preview:explainer1": "vite preview --config vite.explainer1.config.ts",
     "build:explainer2": "vite build --config vite.explainer2.config.ts",
     "preview:explainer2": "vite preview --config vite.explainer2.config.ts",
+    "build:battery": "vite build --config vite.battery.config.ts",
+    "preview:battery": "vite preview --config vite.battery.config.ts",
     "build:all": "tsc -b && vite build && vite build --config vite.hero.config.ts --outDir dist --emptyOutDir false"
   },
   "dependencies": {

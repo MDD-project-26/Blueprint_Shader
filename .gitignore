@@ -3,6 +3,7 @@ dist/
 dist-hero/
 dist-canvas/
 dist-explainer-*/
+dist-battery/
 .DS_Store
 
 # Not referenced by index.html/main.js/src — unrelated prototype assets
