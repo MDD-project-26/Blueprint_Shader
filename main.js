@@ -7,7 +7,7 @@
 // `pnpm build:hero`/`build:canvas` after adding this.
 import { BufferTarget, CanvasSource, getFirstEncodableVideoCodec, Mp4OutputFormat, Output, Quality } from 'mediabunny';
 import { createBatteryStack } from './battery-stack.js';
-import { createSidewaysBatteryStack } from './battery-sideways-stack.js';
+import { createSidewaysBatteryStack, mergeObjTexts } from './battery-sideways-stack.js';
 
 // --- Config ---------------------------------------------------------------
 
@@ -3294,7 +3294,8 @@ let greenTriObjectIndexCache = null; // one entry per green triangle, parallel t
 let batteryStack = null;
 let batteryStackEnabled = false;
 let batteryStackCount = BATTERY_COUNT_MAX;
-let batteryModel = 'EP5';
+const BATTERY_MODELS = ['EP5', 'EP12'];
+let batteryModel = BATTERY_MODELS[0];
 let batteryStackAnimation = true;
 let batteryModelLoading = false;
 let batteryGreenTriangleRanges = [];
@@ -3445,10 +3446,13 @@ function drawBatteryRanges(mode, ranges, setOpacity, depthPrepass) {
 // still, until someone's looking at it.
 const BATTERY_INTRO_GAP_PX = 50;
 const BATTERY_INTRO_LEAD_PX = 200;
+// How long a newly focused sideways model stays held apart before restacking,
+// so the view is most of the way there when it starts (see focusBatteryModel).
+const BATTERY_FOCUS_RESTACK_DELAY_MS = 300;
 let batteryIntroPlayed = false;
 let batteryIntroInView = !IS_BATTERY_EMBED;
 
-function spreadBatteryForIntro() {
+function spreadBatteryForIntro(model) {
   if (!batteryStackAnimation || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   // Convert the same screen-space gap to the module's stacking axis using
   // its projected length and the renderer's scale.
@@ -3458,7 +3462,7 @@ function spreadBatteryForIntro() {
     ? Math.hypot(Math.sin(cubeRotY), Math.sin(cubeRotX) * Math.cos(cubeRotY))
     : Math.cos(cubeRotX);
   const gap = BATTERY_INTRO_GAP_PX / (pxPerViewUnit * scale * Math.max(0.2, axisProjection));
-  batteryStack.spreadApart(gap);
+  batteryStack.spreadApart(gap, model);
   updateBatteryStackGeometry();
 }
 
@@ -3469,28 +3473,47 @@ function playBatteryIntro() {
   updateBatteryStackGeometry();
 }
 
-async function loadBundledBatteryModel(model = batteryModel) {
-  if (IS_SIDEWAYS_BATTERY && !['EP5', 'EP12'].includes(model)) return;
-  const asset = IS_SIDEWAYS_BATTERY ? `${model}-battery-stack` : 'NGEN_assets';
-  const requestedCount = IS_SIDEWAYS_BATTERY && batteryStackEnabled ? batteryStackCount : 3;
+// The sideways module shows EP5 and EP12 side by side in one scene; the
+// panel's model buttons only move the view between them. The model the view
+// arrives at restacks the way it does on load: held apart, then eased together.
+function focusBatteryModel(model) {
+  if (!IS_SIDEWAYS_BATTERY || !batteryStack?.focus) return;
+  const previous = batteryStack.focusedModel;
+  batteryStack.focus(model);
+  batteryModel = batteryStack.focusedModel;
+  if (batteryModel !== previous && batteryStackEnabled) {
+    spreadBatteryForIntro(batteryModel);
+    batteryStack.settle(performance.now(), undefined, BATTERY_FOCUS_RESTACK_DELAY_MS);
+    updateBatteryStackGeometry();
+  }
+  notifyModelState();
+}
+
+async function loadBundledBatteryModel() {
+  // Both sideways models load together, merged into a single scene.
+  const assets = IS_SIDEWAYS_BATTERY ? BATTERY_MODELS.map(model => `${model}-battery-stack`) : ['NGEN_assets'];
+  const asset = assets.join(' + ');
   if (batteryModelLoading) return;
   batteryModelLoading = true;
   notifyModelState();
   try {
     const [objText, mtlText] = await Promise.all(['obj', 'mtl'].map(async extension => {
-      const response = await fetch(`/models/${asset}.${extension}`);
-      if (!response.ok) throw new Error(`Battery ${extension} file is unavailable.`);
-      return response.text();
+      const texts = await Promise.all(assets.map(async name => {
+        const response = await fetch(`/models/${name}.${extension}`);
+        if (!response.ok) throw new Error(`Battery ${extension} file is unavailable.`);
+        return response.text();
+      }));
+      return extension === 'obj' ? mergeObjTexts(texts) : texts.join('\n');
     }));
     const parsed = parseObj(objText, parseMtl(mtlText));
     if (!parsed) throw new Error('Battery model has no faces.');
     applyParsedModel(parsed, `${asset}.obj`, `${asset}.mtl`);
-    batteryModel = model;
+    focusBatteryModel(batteryModel);
     clearModelFlowPath();
     if (IS_BATTERY_ROUTE) {
-      // Both modules open with three batteries. Preserve the sideways count
-      // on model changes and center before posing the assembly intro.
-      configureBatteryStack(requestedCount, true);
+      // Both modules open with three batteries, centered before posing the
+      // assembly intro.
+      configureBatteryStack(3, true);
       batteryCenterY = batteryStack?.centerOffset ?? 0;
       batteryCenterVelocity = 0;
       batteryIntroPlayed = false;
@@ -3629,7 +3652,10 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = []) {
       maxZ: Math.max(...parsed.objects.map(object => object.bounds.maxZ)),
     };
     const center = [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2, (bounds.minZ + bounds.maxZ) / 2];
-    const { zoomGoal } = computeCameraTargetGoalForObject({ center, bounds });
+    // Side-by-side models are viewed one at a time (see focusBatteryModel),
+    // so size to the larger of them rather than to the pair.
+    const zoomGoal = Math.min(...(batteryStack.frames ?? [{ center, bounds }])
+      .map(frame => computeCameraTargetGoalForObject(frame).zoomGoal));
     setCubeSizePercent(zoomGoal * 100);
     const scale = CUBE_SCALE * cubeSizeScale;
     modelOffsetXPercent = -center[0] * scale / MODEL_POSITION_RANGE * 100;
@@ -6214,11 +6240,11 @@ function renderCubeFrame() {
     // the current pan (see getObjectSpacePan's comment for why that's the
     // pivot), or the active camera target's centroid when one's selected,
     // since that's what camera-target mode locks to screen-center instead.
-    // Skipped outright while the panels are hidden (see panelsHidden) or
-    // while photo/video mode is active — a presenter-facing dev aid, not
-    // something that belongs in an otherwise clean shot or a captured
-    // photo/video.
-    if (!panelsHidden && !photoMode && !videoMode) {
+    // Skipped outright on the preview routes, while the panels are hidden
+    // (see panelsHidden) or while photo/video mode is active — a
+    // presenter-facing dev aid, not something that belongs in an embedded
+    // preview, an otherwise clean shot or a captured photo/video.
+    if (!IS_PREVIEW_ROUTE && !panelsHidden && !photoMode && !videoMode) {
       const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
       const pivotObj = activeTargetName ? cameraTargetCurrent : [-panX / s, -panY / s, -panZ / s];
       gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
@@ -6966,8 +6992,11 @@ function recordAndDisplayFrameTiming(now) {
 let renderLoopRunning = false;
 let canvasOnScreen = true;
 // battery-preview.html's corner readout of the above — optional (null on
-// every other page, and on a host page that leaves it out).
-const renderStatusEl = document.getElementById('render-status');
+// every other page, and on a host page that leaves it out). A module
+// embedded as an iframe reports into the host page's element instead, when
+// the iframe names one in data-render-status (same-origin hosts only).
+const renderStatusEl = document.getElementById('render-status')
+  ?? window.frameElement?.ownerDocument.getElementById(window.frameElement.dataset.renderStatus ?? '');
 
 function setRenderLoopRunning(running) {
   renderLoopRunning = running;
@@ -7160,7 +7189,7 @@ export const controls = {
   setPlusSizePercent,
   loadModelFiles: (files) => loadModelFromFiles(files),
   loadBatteryModel: () => loadBundledBatteryModel(),
-  setBatteryModel: (model) => loadBundledBatteryModel(model),
+  setBatteryModel: focusBatteryModel,
   setBatteryStackEnabled: (enabled) => configureBatteryStack(batteryStackCount, enabled),
   setBatteryStackCount: (count) => configureBatteryStack(count),
   setBatteryStackAnimation: (animation) => configureBatteryStack(batteryStackCount, batteryStackEnabled, animation),

@@ -50,12 +50,22 @@
      renderStatusEl in main.js). Fixed to the viewport, not the stage, so it
      stays readable after the stage has scrolled away — which is exactly
      when it should say "paused". Optional: main.js skips it if the element
-     isn't there, so leave it behind when embedding. */
-  #render-status {
+     isn't there, so leave it behind when embedding. One per canvas: the
+     sideways module's iframe reports into the second through its
+     data-render-status attribute. */
+  .render-statuses {
     position: fixed;
     top: 1rem;
     right: 1rem;
     z-index: 20;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    pointer-events: none;
+    user-select: none;
+  }
+  .render-status {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -69,17 +79,23 @@
     font-family: "Geist Mono", ui-monospace, monospace;
     font-size: 11px;
     line-height: 1;
-    pointer-events: none;
-    user-select: none;
   }
-  #render-status::before {
+  .render-status-label {
+    color: rgba(255, 255, 255, 0.55);
+  }
+  .render-status-state {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .render-status-state::before {
     content: "";
     width: 8px;
     height: 8px;
     border-radius: 50%;
     background: #f5a524;
   }
-  #render-status[data-rendering="true"]::before {
+  .render-status-state[data-rendering="true"]::before {
     background: #3ddc84;
   }
   /* Kept in the DOM but never painted — main.js needs both elements; see
@@ -155,6 +171,12 @@
     The independent EP5/EP12 sideways module follows the vertical stage.
     Its iframe can also be embedded on its own using battery-sideways.html.
     The two .demo-placeholder sections only make this demo page scroll.
+
+    Integration notes for the FE team: HANDOVER.md Part C is the full
+    guide. In short — copy #battery-stage and its CSS, load the built JS
+    and CSS (pnpm build:battery → dist-battery/), and serve /assets/,
+    /fonts/ and /models/NGEN_assets.obj + .mtl from the site root. Leave
+    the placeholders and .render-statuses behind.
   -->
   <section class="demo-placeholder">Your own page content — above the battery section</section>
 
@@ -171,12 +193,22 @@
   <!-- A separate document gives the sideways module its own renderer,
        controls and animation state while sharing the existing render code. -->
   <iframe id="battery-sideways-module" src="/battery-sideways.html"
+    data-render-status="render-status-sideways"
     title="EP5 and EP12 sideways battery stacking" loading="lazy"
-    style="display:block;width:100%;height:100vh;height:100svh;border:0"></iframe>
+    style="display:block;width:100%;height:100vh;height:100svh;margin-top:24px;border:0"></iframe>
 
   <section class="demo-placeholder">Your own page content — below the battery sections</section>
 
-  <div id="render-status" role="status">Rendering</div>
+  <div class="render-statuses">
+    <div class="render-status" role="status">
+      <span class="render-status-label">Vertical stack</span>
+      <span class="render-status-state" id="render-status">Rendering</span>
+    </div>
+    <div class="render-status" role="status">
+      <span class="render-status-label">EP5 / EP12</span>
+      <span class="render-status-state" id="render-status-sideways">Paused (off screen)</span>
+    </div>
+  </div>
 
   <script type="module" src="/src/main.tsx"></script>
   <script type="module" src="/main.js"></script>

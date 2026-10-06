@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { createSidewaysBatteryStack } from '../battery-sideways-stack.js';
+import { createSidewaysBatteryStack, mergeObjTexts } from '../battery-sideways-stack.js';
 import { parser } from './helpers/battery-parser.js';
 
 for (const model of ['EP5', 'EP12']) {
@@ -151,3 +151,54 @@ for (const model of ['EP5', 'EP12']) {
     assert.equal(stack.animating, false, 'Reduced motion settles immediately');
   });
 }
+
+test('EP5 and EP12 sit side by side, change count together and focus moves only the view', () => {
+  const read = (model, extension) => readFileSync(new URL(`../public/models/${model}-battery-stack.${extension}`, import.meta.url), 'utf8');
+  const models = ['EP5', 'EP12'];
+  const source = parser.parseObj(mergeObjTexts(models.map(model => read(model, 'obj'))), parser.parseMtl(read('EP5', 'mtl')));
+  assert.equal(source.objects.length, 8);
+  const stack = createSidewaysBatteryStack(source);
+  assert.ok(stack);
+  const [ep5, ep12] = stack.frames;
+  assert.deepEqual([ep5.model, ep12.model], models);
+  const diagonal = ({ bounds }) => Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ);
+  assert.ok(Math.abs(Math.abs(ep5.center[2] - ep12.center[2]) - 4.5 * Math.max(diagonal(ep5), diagonal(ep12))) < 1e-9,
+    'The models are spaced well beyond one viewport');
+
+  stack.configure(4, true, false, 0);
+  const full = stack.update(0);
+  assert.equal(new Set(full.objectIndex).size, 8);
+  for (const frame of [ep5, ep12]) {
+    const members = full.objects.filter(object => object.name.startsWith(`${frame.model}_`));
+    assert.equal(Math.min(...members.map(object => object.bounds.minZ)), frame.bounds.minZ);
+    assert.equal(Math.max(...members.map(object => object.bounds.maxZ)), frame.bounds.maxZ);
+  }
+  assert.equal(stack.focusedModel, 'EP5');
+  const ep5Offset = stack.centerOffset;
+  stack.focus('EP12');
+  assert.equal(stack.focusedModel, 'EP12');
+  assert.ok(Math.abs(stack.centerOffset - ep5Offset - (ep12.center[2] - ep5.center[2])) < 1e-9);
+  assert.equal(stack.update(1), null, 'Changing focus leaves the geometry alone');
+  stack.focus('EP99');
+  assert.equal(stack.focusedModel, 'EP12');
+
+  stack.spreadApart(2, 'EP12');
+  const held = stack.update(2);
+  for (let index = 0; index < 8; index++) {
+    const moved = held.objects[index].center[2] - full.objects[index].center[2];
+    assert.equal(moved, index > 4 ? (index - 4) * 2 : 0, 'Only the focused row is held apart');
+  }
+  stack.settle(10, undefined, 300);
+  assert.deepEqual(stack.update(300).objects.map(object => object.center), held.objects.map(object => object.center), 'The pose holds through the delay');
+  assert.deepEqual(stack.update(1200).objects.map(object => object.center), full.objects.map(object => object.center));
+
+  stack.configure(2, true, true, 100);
+  const moving = stack.update(150);
+  for (const offset of [0, 4]) {
+    assert.ok(moving.objects[offset + 3].center[0] > source.objects[offset + 3].center[0], 'Both outer batteries leave at once');
+  }
+  const settled = stack.update(2000);
+  assert.equal(new Set(settled.objectIndex).size, 4);
+  assert.equal(stack.activeNames.filter(name => name.startsWith('EP5_')).length, 2);
+  assert.equal(stack.activeNames.filter(name => name.startsWith('EP12_')).length, 2);
+});

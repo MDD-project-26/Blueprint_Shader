@@ -1,14 +1,63 @@
+// Joins OBJ files into one model, shifting each file's face indices past the
+// vertices of the files before it. The EP5 and EP12 exports share a scene, so
+// merged they sit side by side exactly as they were laid out.
+export function mergeObjTexts(texts) {
+  const base = { v: 0, vt: 0, vn: 0 };
+  return texts.map(text => {
+    const seen = { v: 0, vt: 0, vn: 0 };
+    const lines = text.split('\n').map(line => {
+      const [kind, ...refs] = line.trim().split(/\s+/);
+      if (kind in seen) seen[kind]++;
+      if (kind !== 'f') return line;
+      return `f ${refs.map(ref => ref.split('/').map((value, slot) =>
+        value > 0 ? +value + base[['v', 'vt', 'vn'][slot]] : value).join('/')).join(' ')}`;
+    });
+    for (const kind in seen) base[kind] += seen[kind];
+    return lines.join('\n');
+  }).join('\n');
+}
+
+// Center-to-center distance between models sharing a scene, in multiples of
+// the largest model's bounding diagonal.
+const MODEL_SPACING = 4.5;
+
 // Independent EP5/EP12 layout with the same easing, slide/fade and intro
-// timing as battery-stack.js. The imported row runs along Z; entry/exit uses
+// timing as battery-stack.js. Each imported row runs along Z; entry/exit uses
 // +X just like the vertical module, while the intro closes gaps along Z.
+// A source holding both models sets them side by side along Z, changes
+// their counts together, and centers on whichever one has focus.
 export function createSidewaysBatteryStack(source) {
-  const parts = source.objects.map((object, index) => ({ ...object, index }))
-    .filter(object => /^EP(?:5|12)_Side-by-Side_-_Module_0[1-4]$/.test(object.name))
-    .sort((a, b) => a.bounds.minZ - b.bounds.minZ);
-  if (parts.length !== 4 || source.objects.length !== 4) return null;
-  const pitch = parts[1].center[2] - parts[0].center[2];
-  if (!(pitch > 0)) return null;
-  const slideDistance = pitch * 1.4;
+  const named = source.objects.map((object, index) => ({ ...object, index,
+    model: /^(EP(?:5|12))_Side-by-Side_-_Module_0[1-4]$/.exec(object.name)?.[1] }));
+  if (!named.length || named.some(part => !part.model)) return null;
+  const groups = [...new Set(named.map(part => part.model))].map(model => {
+    const members = named.filter(part => part.model === model).sort((a, b) => a.bounds.minZ - b.bounds.minZ);
+    const pitch = members.length === 4 ? members[1].center[2] - members[0].center[2] : 0;
+    const bounds = Object.fromEntries(['X', 'Y', 'Z'].flatMap(axis => [
+      [`min${axis}`, Math.min(...members.map(part => part.bounds[`min${axis}`]))],
+      [`max${axis}`, Math.max(...members.map(part => part.bounds[`max${axis}`]))],
+    ]));
+    const center = ['X', 'Y', 'Z'].map(axis => (bounds[`min${axis}`] + bounds[`max${axis}`]) / 2);
+    return { model, pitch, bounds, center, parts: members.map((part, order) => ({ ...part, order, pitch })) };
+  });
+  if (groups.some(group => !(group.pitch > 0))) return null;
+  const parts = groups.flatMap(group => group.parts);
+  const sceneCenter = (Math.min(...groups.map(group => group.bounds.minZ)) + Math.max(...groups.map(group => group.bounds.maxZ))) / 2;
+  // Models sharing a scene are pushed apart along Z, far enough that a view
+  // framing one of them leaves the others outside the viewport.
+  const spacing = MODEL_SPACING * Math.max(...groups.map(({ bounds }) =>
+    Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ)));
+  const shifts = new Float64Array(source.objects.length);
+  const row = [...groups].sort((a, b) => a.center[2] - b.center[2]);
+  const rowStart = row[0].center[2];
+  row.forEach((group, place) => {
+    const shift = rowStart + place * spacing - group.center[2];
+    group.center[2] += shift; group.bounds.minZ += shift; group.bounds.maxZ += shift;
+    for (const part of group.parts) shifts[part.index] = shift;
+  });
+  const slideDistance = new Float64Array(source.objects.length);
+  for (const part of parts) slideDistance[part.index] = part.pitch * 1.4;
+  let focused = groups[0];
   const slideDuration = 150, staggerDuration = 35, settleDuration = 800;
   const clamp = value => Math.max(0, Math.min(1, value));
   const easeOut = t => Math.sin(Math.PI * t / 2);
@@ -22,9 +71,9 @@ export function createSidewaysBatteryStack(source) {
 
   let count = 4, enabled = false, animate = true, dirty = true, spread = false;
   let active = new Set(parts.map(part => part.index)), tracks = [], packed = null;
-  const offsets = new Float64Array(4);
-  const slides = new Float64Array(4);
-  const selected = () => enabled ? parts.slice(0, count) : parts;
+  const offsets = new Float64Array(source.objects.length);
+  const slides = new Float64Array(source.objects.length);
+  const selected = () => enabled ? groups.flatMap(group => group.parts.slice(0, count)) : parts;
 
   function sample(now) {
     const nextTracks = [];
@@ -59,9 +108,9 @@ export function createSidewaysBatteryStack(source) {
       active = wanted; offsets.fill(0); slides.fill(0); tracks = [];
     } else if (replay) {
       active = wanted; slides.fill(0);
-      tracks = selected().map((part, order) => {
-        offsets[part.index] = order ? pitch * 2.2 : 0;
-        return { index: part.index, at: now, delay: order * staggerDuration,
+      tracks = selected().map(part => {
+        offsets[part.index] = part.order ? part.pitch * 2.2 : 0;
+        return { index: part.index, at: now, delay: part.order * staggerDuration,
           duration: 300, from: offsets[part.index], to: 0, spread: true };
       });
     } else {
@@ -69,13 +118,11 @@ export function createSidewaysBatteryStack(source) {
       if (wasSpread) { offsets.fill(0); slides.fill(0); }
       const previousTracks = new Map(wasSpread ? [] : tracks.map(track => [track.index, track]));
       tracks = [];
-      const departures = parts.filter(part => active.has(part.index) && !wanted.has(part.index)).reverse();
-      const arrivals = parts.filter(part => wanted.has(part.index) && (!active.has(part.index) || slides[part.index] !== 0));
       const schedule = (orderedParts, leaving) => {
         let preceding = null;
         for (const part of orderedParts) {
           const index = part.index, visible = active.has(index);
-          const to = leaving ? slideDistance : 0;
+          const to = leaving ? slideDistance[index] : 0;
           const continuing = previousTracks.get(index);
           let track;
           if (continuing && continuing.to === to) {
@@ -84,9 +131,9 @@ export function createSidewaysBatteryStack(source) {
             // and let a newly removed inner battery overtake it.
             track = continuing;
           } else {
-            const from = visible ? slides[index] : slideDistance;
+            const from = visible ? slides[index] : slideDistance[index];
             slides[index] = from;
-            const duration = Math.max(1, slideDuration * Math.abs(to - from) / slideDistance);
+            const duration = Math.max(1, slideDuration * Math.abs(to - from) / slideDistance[index]);
             const start = preceding
               ? Math.max(now, preceding.at + preceding.delay + staggerDuration,
                 preceding.at + preceding.delay + preceding.duration - duration)
@@ -99,8 +146,11 @@ export function createSidewaysBatteryStack(source) {
         }
       };
       // Remove from the outside inward; insert from the inside outward.
-      schedule(departures, true);
-      schedule(arrivals, false);
+      // Each model takes its own turns, so both rows move together.
+      for (const group of groups) {
+        schedule(group.parts.filter(part => active.has(part.index) && !wanted.has(part.index)).reverse(), true);
+        schedule(group.parts.filter(part => wanted.has(part.index) && (!active.has(part.index) || slides[part.index] !== 0)), false);
+      }
     }
     packed = null; dirty = true;
   }
@@ -145,16 +195,17 @@ export function createSidewaysBatteryStack(source) {
 
   return {
     configure,
-    spreadApart(gap) {
+    // Poses the intro; given a model, only that one's row is held apart.
+    spreadApart(gap, model) {
       if (!enabled) return;
       tracks = []; spread = true; slides.fill(0); active = new Set(selected().map(part => part.index));
-      selected().forEach((part, order) => { offsets[part.index] = order * gap; });
+      for (const part of selected()) offsets[part.index] = !model || part.model === model ? part.order * gap : 0;
       packed = null; dirty = true;
     },
-    settle(now, duration = settleDuration) {
+    settle(now, duration = settleDuration, delay = 0) {
       if (!spread) return;
       spread = false;
-      tracks = selected().map(part => ({ index: part.index, at: now, delay: 0,
+      tracks = selected().map(part => ({ index: part.index, at: now, delay,
         duration, from: offsets[part.index], to: 0, settle: true, spread: true }));
       dirty = true;
     },
@@ -171,24 +222,28 @@ export function createSidewaysBatteryStack(source) {
           for (let vertex = range.start; vertex < range.end; vertex += 3) {
             const sourceVertex = range.sourceStart + vertex - range.start;
             positions[vertex] = original[sourceVertex] + slides[range.index];
-            positions[vertex + 2] = original[sourceVertex + 2] + offsets[range.index];
+            positions[vertex + 2] = original[sourceVertex + 2] + shifts[range.index] + offsets[range.index];
           }
         }
       }
       dirty = false;
       const objects = source.objects.map((object, index) => ({ ...object,
-        center: [object.center[0] + slides[index], object.center[1], object.center[2] + offsets[index]],
+        center: [object.center[0] + slides[index], object.center[1], object.center[2] + shifts[index] + offsets[index]],
         bounds: { ...object.bounds,
           minX: object.bounds.minX + slides[index], maxX: object.bounds.maxX + slides[index],
-          minZ: object.bounds.minZ + offsets[index], maxZ: object.bounds.maxZ + offsets[index],
+          minZ: object.bounds.minZ + shifts[index] + offsets[index], maxZ: object.bounds.maxZ + shifts[index] + offsets[index],
         },
       }));
       const fades = [...active].filter(index => slides[index] > 0)
-        .map(index => ({ index, opacity: 1 - clamp(slides[index] / slideDistance) }));
+        .map(index => ({ index, opacity: 1 - clamp(slides[index] / slideDistance[index]) }));
       return { ...packed, objects, fades, membershipChanged };
     },
     get activeNames() { return selected().map(part => part.name); },
-    get centerOffset() { return enabled ? (count - 4) * pitch / 2 : 0; },
+    // Moves the view to one model; the other stays in the scene beside it.
+    focus(model) { focused = groups.find(group => group.model === model) ?? focused; },
+    get focusedModel() { return focused.model; },
+    get frames() { return groups.map(({ model, bounds, center }) => ({ model, bounds, center })); },
+    get centerOffset() { return focused.center[2] - sceneCenter + (enabled ? (count - 4) * focused.pitch / 2 : 0); },
     get animating() { return tracks.length > 0; },
   };
 }
