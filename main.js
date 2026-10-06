@@ -7,6 +7,7 @@
 // `pnpm build:hero`/`build:canvas` after adding this.
 import { BufferTarget, CanvasSource, getFirstEncodableVideoCodec, Mp4OutputFormat, Output, Quality } from 'mediabunny';
 import { createBatteryStack } from './battery-stack.js';
+import { createSidewaysBatteryStack } from './battery-sideways-stack.js';
 
 // --- Config ---------------------------------------------------------------
 
@@ -69,6 +70,9 @@ const IS_PREVIEW_ROUTE = canvas?.dataset.preview === 'true';
 // orbit (see updateParallaxTargetFromPointer). battery-preview.html sets
 // this flag too, so all of it applies there as well.
 const IS_BATTERY_ROUTE = canvas?.dataset.battery === 'true';
+const IS_SIDEWAYS_BATTERY = IS_BATTERY_ROUTE && canvas?.dataset.stacking === 'sideways';
+const BATTERY_COUNT_MIN = IS_SIDEWAYS_BATTERY ? 1 : 3;
+const BATTERY_COUNT_MAX = IS_SIDEWAYS_BATTERY ? 4 : 9;
 // battery-preview.html (both flags) is the version meant to be embedded as
 // one section of a longer, scrolling page — so it must leave the page
 // alone: no keyboard shortcuts, no wheel-zoom or touch-drag swallowing the
@@ -3023,6 +3027,7 @@ function getModelState() {
     batteryStackCount,
     batteryStackAnimation,
     batteryModelLoading,
+    batteryModel,
     customModelObjectNames: batteryStack?.activeNames ?? customModelObjects.map((o) => o.name),
     cameraTargetSlots,
     cameraTargetActiveIndex,
@@ -3288,7 +3293,8 @@ let greenTriObjectIndexCache = null; // one entry per green triangle, parallel t
 
 let batteryStack = null;
 let batteryStackEnabled = false;
-let batteryStackCount = 9;
+let batteryStackCount = BATTERY_COUNT_MAX;
+let batteryModel = 'EP5';
 let batteryStackAnimation = true;
 let batteryModelLoading = false;
 let batteryGreenTriangleRanges = [];
@@ -3327,7 +3333,7 @@ function stepBatteryCentering() {
 
 function configureBatteryStack(count = batteryStackCount, enabled = batteryStackEnabled, animation = batteryStackAnimation, replay = false) {
   if (!batteryStack) return;
-  if (!Number.isInteger(count) || count < 3 || count > 9) return;
+  if (!Number.isInteger(count) || count < BATTERY_COUNT_MIN || count > BATTERY_COUNT_MAX) return;
   batteryStackCount = count;
   batteryStackEnabled = !!enabled;
   batteryStackAnimation = !!animation;
@@ -3428,8 +3434,9 @@ function drawBatteryRanges(mode, ranges, setOpacity, depthPrepass) {
 }
 
 // The opening animation: the stack starts held apart — each module
-// BATTERY_INTRO_GAP_PX of screen height above the one below it (see
-// spreadBatteryForIntro, called once the model's loaded) — and, when
+// BATTERY_INTRO_GAP_PX of screen space from its neighbor along the stack's
+// axis (Y vertically, Z sideways). spreadBatteryForIntro poses it on load;
+// when
 // triggered, the modules ease together into the assembled stack
 // (batteryStack.settle). Once per model load. On /battery the trigger is
 // the load itself; embedded in a longer page (IS_BATTERY_EMBED) it waits
@@ -3443,12 +3450,14 @@ let batteryIntroInView = !IS_BATTERY_EMBED;
 
 function spreadBatteryForIntro() {
   if (!batteryStackAnimation || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  // CSS pixels to object-space height: the ortho projection's pixels per
-  // view unit, the render scale, and how much of the model's vertical axis
-  // the current pitch leaves facing the screen.
+  // Convert the same screen-space gap to the module's stacking axis using
+  // its projected length and the renderer's scale.
   const pxPerViewUnit = canvas.clientHeight / (2 * cubeProjectionHalfY);
   const scale = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
-  const gap = BATTERY_INTRO_GAP_PX / (pxPerViewUnit * scale * Math.max(0.2, Math.cos(cubeRotX)));
+  const axisProjection = IS_SIDEWAYS_BATTERY
+    ? Math.hypot(Math.sin(cubeRotY), Math.sin(cubeRotX) * Math.cos(cubeRotY))
+    : Math.cos(cubeRotX);
+  const gap = BATTERY_INTRO_GAP_PX / (pxPerViewUnit * scale * Math.max(0.2, axisProjection));
   batteryStack.spreadApart(gap);
   updateBatteryStackGeometry();
 }
@@ -3460,23 +3469,28 @@ function playBatteryIntro() {
   updateBatteryStackGeometry();
 }
 
-async function loadBundledBatteryModel() {
+async function loadBundledBatteryModel(model = batteryModel) {
+  if (IS_SIDEWAYS_BATTERY && !['EP5', 'EP12'].includes(model)) return;
+  const asset = IS_SIDEWAYS_BATTERY ? `${model}-battery-stack` : 'NGEN_assets';
+  const requestedCount = IS_SIDEWAYS_BATTERY && batteryStackEnabled ? batteryStackCount : 3;
   if (batteryModelLoading) return;
   batteryModelLoading = true;
   notifyModelState();
   try {
     const [objText, mtlText] = await Promise.all(['obj', 'mtl'].map(async extension => {
-      const response = await fetch(`/models/NGEN_assets.${extension}`);
+      const response = await fetch(`/models/${asset}.${extension}`);
       if (!response.ok) throw new Error(`Battery ${extension} file is unavailable.`);
       return response.text();
     }));
-    applyParsedModel(parseObj(objText, parseMtl(mtlText)), 'NGEN_assets.obj', 'NGEN_assets.mtl');
+    const parsed = parseObj(objText, parseMtl(mtlText));
+    if (!parsed) throw new Error('Battery model has no faces.');
+    applyParsedModel(parsed, `${asset}.obj`, `${asset}.mtl`);
+    batteryModel = model;
     clearModelFlowPath();
     if (IS_BATTERY_ROUTE) {
-      // Opens on the smallest stack, slider at 3, already centered in view
-      // (switching stacking on is never animated, and the camera shouldn't
-      // drift down from the full stack's middle either).
-      configureBatteryStack(3, true);
+      // Both modules open with three batteries. Preserve the sideways count
+      // on model changes and center before posing the assembly intro.
+      configureBatteryStack(requestedCount, true);
       batteryCenterY = batteryStack?.centerOffset ?? 0;
       batteryCenterVelocity = 0;
       batteryIntroPlayed = false;
@@ -3485,7 +3499,7 @@ async function loadBundledBatteryModel() {
     }
   } catch (error) {
     console.error(error);
-    cubeModelStatus = "Couldn't load NGEN_assets.obj";
+    cubeModelStatus = `Couldn't load ${asset}.obj`;
   } finally {
     batteryModelLoading = false;
     notifyModelState();
@@ -3503,12 +3517,12 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = []) {
     notifyModelState();
     return;
   }
-  batteryStack = createBatteryStack(parsed);
+  batteryStack = IS_SIDEWAYS_BATTERY ? createSidewaysBatteryStack(parsed) : createBatteryStack(parsed);
   batteryFades = [];
   batteryCenterY = 0;
   batteryCenterVelocity = 0;
   batteryStackEnabled = false;
-  batteryStackCount = 9;
+  batteryStackCount = BATTERY_COUNT_MAX;
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelPositionBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, parsed.positions, gl.STATIC_DRAW);
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelNormalBuffer);
@@ -4529,8 +4543,10 @@ function getObjectSpacePan() {
   if (targetOwnsCentering) return [0, 0, 0];
   const [x, y, z] = getModelViewOffset();
   // Battery stack re-centering (see batteryCenterY) — in the same scaled
-  // units as the manual pan, hence the render scale.
-  return [x, y - batteryCenterY * CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent, z];
+  // units as the manual pan, hence the render scale. EP5/EP12 follow Z,
+  // leaving +X free for the same entry/exit slide as the vertical module.
+  const center = batteryCenterY * CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
+  return IS_SIDEWAYS_BATTERY ? [x, y, z - center] : [x, y - center, z];
 }
 
 // Möller–Trumbore ray-triangle intersection. tris is a flat Float32Array of
@@ -7049,6 +7065,9 @@ export const controls = {
       isPreviewRoute: IS_PREVIEW_ROUTE,
       // Same again — panel.tsx only offers "Load NGEN battery" on /battery.
       isBatteryRoute: IS_BATTERY_ROUTE,
+      isSidewaysBattery: IS_SIDEWAYS_BATTERY,
+      batteryCountMin: BATTERY_COUNT_MIN,
+      batteryCountMax: BATTERY_COUNT_MAX,
       pulseWidth: pulseWidthValue,
       flowPulseFrequency: flowPulseFrequencyValue,
       flowPulseFrequencyMin: FLOW_PULSE_FREQUENCY_MIN,
@@ -7140,7 +7159,8 @@ export const controls = {
   setPlusFrequency,
   setPlusSizePercent,
   loadModelFiles: (files) => loadModelFromFiles(files),
-  loadBatteryModel: loadBundledBatteryModel,
+  loadBatteryModel: () => loadBundledBatteryModel(),
+  setBatteryModel: (model) => loadBundledBatteryModel(model),
   setBatteryStackEnabled: (enabled) => configureBatteryStack(batteryStackCount, enabled),
   setBatteryStackCount: (count) => configureBatteryStack(count),
   setBatteryStackAnimation: (animation) => configureBatteryStack(batteryStackCount, batteryStackEnabled, animation),

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EP5 / EP12 — Sideways Battery Stacking</title>
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <style>
+    html, body { margin: 0; background: #000; }
+    #battery-stage { position: relative; width: 100%; height: 100vh; height: 100svh; overflow: hidden; }
+    #canvas { display: block; width: 100%; height: 100%; touch-action: pan-y; }
+    .module-title { position: absolute; top: 2rem; left: 2rem; margin: 0; color: #6b7280; font: 500 13px system-ui, sans-serif; }
+    #perf-monitor, #axis-gizmo { visibility: hidden; position: absolute; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <!-- Standalone module: embed this page in an iframe sized by the host.
+       It shares the vertical module's renderer but owns its EP5/EP12 state. -->
+  <section id="battery-stage" aria-label="Sideways battery stacking">
+    <canvas id="canvas" data-battery="true" data-preview="true" data-stacking="sideways"></canvas>
+    <h1 class="module-title">EP5 / EP12 · Sideways stacking</h1>
+    <div id="perf-monitor">
+      <div id="perf-monitor-text"></div>
+      <canvas id="perf-history" width="140" height="32"></canvas>
+    </div>
+    <canvas id="axis-gizmo" width="84" height="84"></canvas>
+    <div id="react-controls-root"></div>
+  </section>
+  <script type="module" src="/src/main.tsx"></script>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

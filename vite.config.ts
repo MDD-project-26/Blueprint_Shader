@@ -40,6 +40,7 @@ export default defineConfig({
         scrollEmbed: path.resolve(__dirname, "scroll-embed.html"),
         battery: path.resolve(__dirname, "battery.html"),
         batteryPreview: path.resolve(__dirname, "battery-preview.html"),
+        batterySideways: path.resolve(__dirname, "battery-sideways.html"),
       },
     },
   },

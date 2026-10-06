@@ -538,8 +538,8 @@ export function Panel() {
         <FieldLabel className="sr-only">Battery count</FieldLabel>
         <Slider
           className="h-full"
-          max={9}
-          min={3}
+          max={state.batteryCountMax}
+          min={state.batteryCountMin}
           onValueChange={(value: number | readonly number[]) => controls.setBatteryStackCount(Array.isArray(value) ? value[0] : value as number)}
           orientation="vertical"
           step={1}
@@ -547,7 +547,7 @@ export function Panel() {
         />
       </Field>
       <div className="flex h-48 flex-1 flex-col justify-between text-muted-foreground text-xs">
-        {[9, 8, 7, 6, 5, 4, 3].map(count => (
+        {Array.from({ length: state.batteryCountMax - state.batteryCountMin + 1 }, (_, i) => state.batteryCountMax - i).map(count => (
           <button
             aria-label={`Select ${count} batteries`}
             aria-pressed={state.batteryStackCount === count}
@@ -592,20 +592,41 @@ export function Panel() {
           #battery-stage) and scrolls away with it. */}
       {state.isPreviewRoute && state.isBatteryRoute && state.batteryStackEnabled && (
         <div className="absolute bottom-6 left-1/2 z-10 flex w-[min(92vw,22rem)] -translate-x-1/2 flex-col gap-3 rounded-[24px] border border-border bg-popover/80 px-6 py-5 text-popover-foreground text-sm shadow-lg backdrop-blur-sm">
+          {state.isSidewaysBattery && (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground text-xs" aria-live="polite">{state.batteryStackCount} {state.batteryStackCount === 1 ? "battery" : "batteries"}</span>
+              <div className="flex gap-1" role="group" aria-label="Battery model">
+                {["EP5", "EP12"].map(model => (
+                  <Button
+                    key={model}
+                    size="sm"
+                    variant={state.batteryModel === model ? "secondary" : "ghost"}
+                    aria-pressed={state.batteryModel === model}
+                    disabled={state.batteryModelLoading}
+                    onClick={() => controls.setBatteryModel(model)}
+                  >
+                    {model}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
           <Field>
             <FieldLabel className="sr-only">Battery count</FieldLabel>
             <Slider
-              max={9}
-              min={3}
+              disabled={state.batteryModelLoading}
+              max={state.batteryCountMax}
+              min={state.batteryCountMin}
               onValueChange={(value: number | readonly number[]) => controls.setBatteryStackCount(Array.isArray(value) ? value[0] : value as number)}
               step={1}
               value={state.batteryStackCount}
             />
           </Field>
           <div className="flex justify-between text-muted-foreground text-xs">
-            {[3, 4, 5, 6, 7, 8, 9].map(count => (
+            {Array.from({ length: state.batteryCountMax - state.batteryCountMin + 1 }, (_, i) => state.batteryCountMin + i).map(count => (
               <button
-                aria-label={`Select ${count} batteries`}
+                aria-label={`Select ${count} ${count === 1 ? "battery" : "batteries"}`}
+                disabled={state.batteryModelLoading}
                 aria-pressed={state.batteryStackCount === count}
                 className={cn("w-4 text-center tabular-nums", state.batteryStackCount === count && "text-foreground")}
                 key={count}
