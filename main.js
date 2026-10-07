@@ -26,10 +26,29 @@ const DPR = Math.min(window.devicePixelRatio || 1, 2);
 // mechanism that strips `if (import.meta.env.DEV)` blocks from production
 // React builds — so none of that code ships to the hero bundle at all.
 const IS_HERO = typeof __HERO__ !== 'undefined' && __HERO__;
+// Build-time flag for the battery embed (see vite.battery-embed.config.ts and
+// battery-embed.js). That build compiles this whole module into a factory,
+// createScene(embedScene), so a host page can create, destroy and re-create
+// scenes at will, several at once: everything below is then one scene's own
+// state, and `embedScene` — which only exists in that build, so every read of
+// it sits behind this flag — carries what the page would otherwise supply
+// (the canvas, the variant, where the models are served from). The embed has
+// no panel, shortcuts, overlays or storage of its own.
+const IS_EMBED = typeof __EMBED__ !== 'undefined' && __EMBED__;
+// The presenter tool itself: neither of the two stripped-down builds.
+const IS_TOOL = !IS_HERO && !IS_EMBED;
+// Everything a scene registers on the page (listeners, observers, the render
+// loop, in-flight model requests) is tied to this controller's signal. Only
+// the embed ever aborts it — from destroy(), see battery-embed.js, which
+// owns it for that reason.
+const teardown = IS_EMBED ? embedScene.teardown : new AbortController();
+// The embed never reads or writes the host site's storage; every setting
+// keeps its default there.
+const storage = IS_EMBED ? { getItem: () => null, setItem() {}, removeItem() {} } : localStorage;
 
 // --- DOM --------------------------------------------------------------
 
-const canvas = document.getElementById('canvas');
+const canvas = IS_EMBED ? embedScene.canvas : document.getElementById('canvas');
 
 // Runtime flag (not a build-time one like IS_HERO — this is the same tool
 // bundle as the root page, just served from scroll.html, which sets
@@ -42,7 +61,7 @@ const canvas = document.getElementById('canvas');
 // sitting at its resting pose. Live hover-parallax tilt
 // (updateParallaxTargetFromPointer) is unaffected either way; it doesn't
 // route through the intro tweens or photo/video mode.
-const IS_SCROLL_ROUTE = canvas?.dataset.scroll === 'true';
+const IS_SCROLL_ROUTE = !IS_EMBED && canvas?.dataset.scroll === 'true';
 // scroll-preview.html sets both data-scroll and data-preview — it's the
 // same IS_SCROLL_ROUTE experience (scroll-driven camera, bottom-left info
 // card), just with the React control panel forced permanently hidden (see
@@ -57,7 +76,7 @@ const IS_SCROLL_ROUTE = canvas?.dataset.scroll === 'true';
 // same-bundle approach. battery-preview.html pairs the same flag with
 // data-battery instead: panels hidden for good, only the battery count
 // slider left on screen (see panel.tsx).
-const IS_PREVIEW_ROUTE = canvas?.dataset.preview === 'true';
+const IS_PREVIEW_ROUTE = IS_EMBED || canvas?.dataset.preview === 'true';
 // battery.html's own data-battery="true" — the same tool as index.html
 // (full panel, same main.tsx/main.js), except startup loads the bundled
 // NGEN battery (loadBundledBatteryModel) with stacking already switched on
@@ -69,16 +88,17 @@ const IS_PREVIEW_ROUTE = canvas?.dataset.preview === 'true';
 // photo/video mode (their key handlers are never wired up), and the hover
 // orbit (see updateParallaxTargetFromPointer). battery-preview.html sets
 // this flag too, so all of it applies there as well.
-const IS_BATTERY_ROUTE = canvas?.dataset.battery === 'true';
-const IS_SIDEWAYS_BATTERY = IS_BATTERY_ROUTE && canvas?.dataset.stacking === 'sideways';
+const IS_BATTERY_ROUTE = IS_EMBED || canvas?.dataset.battery === 'true';
+const IS_SIDEWAYS_BATTERY = IS_EMBED ? embedScene.sideways : IS_BATTERY_ROUTE && canvas?.dataset.stacking === 'sideways';
 const BATTERY_COUNT_MIN = IS_SIDEWAYS_BATTERY ? 1 : 3;
 const BATTERY_COUNT_MAX = IS_SIDEWAYS_BATTERY ? 4 : 9;
 // battery-preview.html (both flags) is the version meant to be embedded as
 // one section of a longer, scrolling page — so it must leave the page
 // alone: no keyboard shortcuts, no wheel-zoom or touch-drag swallowing the
 // page's own scroll, no window-wide file drop, and no rendering at all
-// while it's scrolled out of view (see each IS_BATTERY_EMBED check).
-const IS_BATTERY_EMBED = IS_BATTERY_ROUTE && IS_PREVIEW_ROUTE;
+// while it's scrolled out of view (see each IS_BATTERY_EMBED check). The
+// embed build (IS_EMBED) is always this.
+const IS_BATTERY_EMBED = IS_EMBED || (IS_BATTERY_ROUTE && IS_PREVIEW_ROUTE);
 
 // #scroll-track (scroll.html) is the only thing giving the /scroll route's
 // document real scroll height — see its own CSS comment. Sized dynamically
@@ -136,12 +156,12 @@ function updateScrollTrackHeight() {
 const SLIDER_STORAGE_PREFIX = 'iconMosaic.slider.';
 
 function restoreNumber(id, fallback) {
-  const stored = localStorage.getItem(SLIDER_STORAGE_PREFIX + id);
+  const stored = storage.getItem(SLIDER_STORAGE_PREFIX + id);
   return stored !== null ? Number(stored) : fallback;
 }
 
 function persistNumber(id, value) {
-  localStorage.setItem(SLIDER_STORAGE_PREFIX + id, String(value));
+  storage.setItem(SLIDER_STORAGE_PREFIX + id, String(value));
 }
 
 // One-time migration: the cubeSize slider's default changed from 1000% to
@@ -149,9 +169,9 @@ function persistNumber(id, value) {
 // browsers pick up the new default instead of restoring the old one.
 // Anything the user sets afterward still persists normally.
 const CUBE_SIZE_RESET_MIGRATION_KEY = 'iconMosaic.cubeSizeDefaultResetV1';
-if (!localStorage.getItem(CUBE_SIZE_RESET_MIGRATION_KEY)) {
-  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'cubeSize');
-  localStorage.setItem(CUBE_SIZE_RESET_MIGRATION_KEY, '1');
+if (!storage.getItem(CUBE_SIZE_RESET_MIGRATION_KEY)) {
+  storage.removeItem(SLIDER_STORAGE_PREFIX + 'cubeSize');
+  storage.setItem(CUBE_SIZE_RESET_MIGRATION_KEY, '1');
 }
 
 // One-time migration: the dot fill's defaults changed (frequency 1 -> 9 ->
@@ -159,10 +179,10 @@ if (!localStorage.getItem(CUBE_SIZE_RESET_MIGRATION_KEY)) {
 // (rather than reusing V1) so browsers that already ran V1 still pick up
 // the frequency 9 -> 4 change.
 const DOT_DEFAULTS_RESET_MIGRATION_KEY = 'iconMosaic.dotDefaultsResetV2';
-if (!localStorage.getItem(DOT_DEFAULTS_RESET_MIGRATION_KEY)) {
-  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'dotFrequency');
-  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'dotSize');
-  localStorage.setItem(DOT_DEFAULTS_RESET_MIGRATION_KEY, '1');
+if (!storage.getItem(DOT_DEFAULTS_RESET_MIGRATION_KEY)) {
+  storage.removeItem(SLIDER_STORAGE_PREFIX + 'dotFrequency');
+  storage.removeItem(SLIDER_STORAGE_PREFIX + 'dotSize');
+  storage.setItem(DOT_DEFAULTS_RESET_MIGRATION_KEY, '1');
 }
 
 // One-time migration: the plus fill's defaults changed (frequency 11 -> 2,
@@ -170,10 +190,10 @@ if (!localStorage.getItem(DOT_DEFAULTS_RESET_MIGRATION_KEY)) {
 // new V2 key (rather than reusing V1, which only ever cleared frequency)
 // so browsers that already ran V1 still pick up the size default too.
 const PLUS_DEFAULTS_RESET_MIGRATION_KEY = 'iconMosaic.plusDefaultsResetV2';
-if (!localStorage.getItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY)) {
-  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'plusFrequency');
-  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'plusSize');
-  localStorage.setItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY, '1');
+if (!storage.getItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY)) {
+  storage.removeItem(SLIDER_STORAGE_PREFIX + 'plusFrequency');
+  storage.removeItem(SLIDER_STORAGE_PREFIX + 'plusSize');
+  storage.setItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY, '1');
 }
 
 // One-time cleanup: the model's X/Y/Z position used to persist across
@@ -183,11 +203,11 @@ if (!localStorage.getItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY)) {
 // modelOffsetXPercent's declaration), so any browser with an old persisted
 // value just has dead, never-read localStorage entries; drop them once.
 const MODEL_OFFSET_RESET_MIGRATION_KEY = 'iconMosaic.modelOffsetDefaultResetV1';
-if (!localStorage.getItem(MODEL_OFFSET_RESET_MIGRATION_KEY)) {
-  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'modelOffsetX');
-  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'modelOffsetY');
-  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'modelOffsetZ');
-  localStorage.setItem(MODEL_OFFSET_RESET_MIGRATION_KEY, '1');
+if (!storage.getItem(MODEL_OFFSET_RESET_MIGRATION_KEY)) {
+  storage.removeItem(SLIDER_STORAGE_PREFIX + 'modelOffsetX');
+  storage.removeItem(SLIDER_STORAGE_PREFIX + 'modelOffsetY');
+  storage.removeItem(SLIDER_STORAGE_PREFIX + 'modelOffsetZ');
+  storage.setItem(MODEL_OFFSET_RESET_MIGRATION_KEY, '1');
 }
 
 // Width of the model flow's traveling glow pulse (blueprint mode), as a
@@ -408,7 +428,7 @@ const PLUS_THICKNESS_RATIO = 0.12;
 // changes. Declared ahead of the light angle/intensity block below since
 // each theme keeps its own independent light defaults/storage.
 const SHADER_THEME_STORAGE_KEY = 'iconMosaic.shaderTheme';
-const storedShaderTheme = localStorage.getItem(SHADER_THEME_STORAGE_KEY);
+const storedShaderTheme = storage.getItem(SHADER_THEME_STORAGE_KEY);
 // Storage (SHADER_THEME_STORAGE_KEY) is shared across every route/build, so
 // a 'dark' preference saved while using the root tool (or any other route)
 // would otherwise silently carry over here too. The /scroll route always
@@ -488,17 +508,17 @@ function setLightIntensityPercent(value) {
 // and overlays a crease/boundary-edge wireframe in bright cyan, on a navy
 // background — see renderCubeFrame and buildCreaseEdgeLines.
 const BLUEPRINT_STORAGE_KEY = 'iconMosaic.blueprint';
-const storedBlueprint = localStorage.getItem(BLUEPRINT_STORAGE_KEY);
+const storedBlueprint = storage.getItem(BLUEPRINT_STORAGE_KEY);
 let blueprintEnabled = storedBlueprint !== null ? storedBlueprint === 'true' : true;
 
 function setBlueprintEnabled(value) {
   blueprintEnabled = value;
-  localStorage.setItem(BLUEPRINT_STORAGE_KEY, String(blueprintEnabled));
+  storage.setItem(BLUEPRINT_STORAGE_KEY, String(blueprintEnabled));
 }
 
 function setShaderTheme(value) {
   shaderTheme = value === 'light' ? 'light' : 'dark';
-  localStorage.setItem(SHADER_THEME_STORAGE_KEY, shaderTheme);
+  storage.setItem(SHADER_THEME_STORAGE_KEY, shaderTheme);
   // Reload the light angle/intensity sliders from this theme's own
   // storage/defaults — see lightAzimuthStorageId etc. above — and let the
   // panel know, since these are ordinary panel-controlled slider values.
@@ -525,6 +545,25 @@ function setShaderTheme(value) {
 // projection matrix (see updateCubeProjection) instead of a pixel crop,
 // since there's no longer a separate square source to crop from.
 const gl = canvas.getContext('webgl', { antialias: true });
+if (IS_EMBED) {
+  if (!gl) throw new Error('WebGL is unavailable.');
+  // A host can mount a new scene on this same canvas after destroy(), and a
+  // canvas only ever has the one context, so the context has to stay usable:
+  // destroy() frees what this scene allocated in it instead of losing it.
+  const kinds = ['Buffer', 'Program', 'Shader'];
+  const allocated = [];
+  for (const kind of kinds) {
+    gl[`create${kind}`] = (...args) => {
+      const resource = WebGLRenderingContext.prototype[`create${kind}`].apply(gl, args);
+      allocated.push([kind, resource]);
+      return resource;
+    };
+  }
+  teardown.signal.addEventListener('abort', () => {
+    for (const [kind, resource] of allocated) gl[`delete${kind}`](resource);
+    for (const kind of kinds) delete gl[`create${kind}`];
+  });
+}
 // Needed for fwidth() in CUBE_FRAGMENT_SHADER's hatch-line anti-aliasing —
 // must be enabled before that shader compiles (see below). Universally
 // supported (core in WebGL2, a ubiquitous extension in WebGL1) so no
@@ -1412,7 +1451,7 @@ let cubeParallaxTargetY = 0;
 // should set this to whatever wraps their title/cards, the same way
 // hero.html's own .hero-content does, or their users won't be able to
 // touch-scroll past that text.
-const heroContentEl = document.querySelector(canvas.dataset.heroContentSelector || '.hero-content');
+const heroContentEl = IS_EMBED ? null : document.querySelector(canvas.dataset.heroContentSelector || '.hero-content');
 let heroTouchDragPointerId = null;
 let cubeParallaxX = 0;
 let cubeParallaxY = 0;
@@ -1763,7 +1802,7 @@ function focusIsOnInteractiveControl() {
 
 // Not wired up on the embedded battery either (IS_BATTERY_EMBED): Space,
 // the digits and plain letters belong to the host page there.
-if (!IS_HERO && !IS_BATTERY_EMBED) {
+if (IS_TOOL && !IS_BATTERY_EMBED) {
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'Space' || spaceHeld) return;
   if (focusIsOnInteractiveControl()) return;
@@ -2005,7 +2044,7 @@ window.addEventListener('keydown', (event) => {
   event.preventDefault();
   goToDefaultCameraView();
 });
-} // end if (!IS_HERO && !IS_BATTERY_EMBED) — keyboard shortcuts
+} // end if (IS_TOOL && !IS_BATTERY_EMBED) — keyboard shortcuts
 
 // wheelZoomSyncRAF/scheduleWheelZoomSync stay outside the IS_HERO guard —
 // renderCubeFrame's intro zoom tween (see cubeRotResetZoomInFactor) calls
@@ -2029,7 +2068,7 @@ function scheduleWheelZoomSync() {
 // needs scroll-to-zoom to frame the model, not page-scroll stepping between
 // targets mid-trace, so the listener is still attached here — it just no-ops
 // (leaving the wheel to native scroll) whenever draw mode isn't active.
-if (!IS_HERO) {
+if (IS_TOOL) {
 // Scroll-to-zoom: the mouse wheel (or trackpad scroll) zooms the camera in
 // and out, reusing the exact same underlying scale as the "Model size"
 // slider (see applyCubeSizePercent) — so it zooms into the pivot crosshair
@@ -2053,7 +2092,7 @@ canvas.addEventListener(
   },
   { passive: false },
 );
-} // end if (!IS_HERO) — wheel zoom
+} // end if (IS_TOOL) — wheel zoom
 
 // The camera itself needs no 'scroll' listener for IS_SCROLL_ROUTE —
 // renderCubeFrame reads window.scrollY directly, once per rendered frame, to
@@ -2115,7 +2154,7 @@ canvas.addEventListener('pointerdown', (event) => {
   cubeDragging = true;
   cubeLastPointer = { x: event.clientX, y: event.clientY };
   canvas.style.cursor = 'grabbing';
-});
+}, { signal: teardown.signal });
 } // end if (!IS_HERO) — pointerdown drag interactions
 
 if (IS_HERO) {
@@ -2195,7 +2234,7 @@ window.addEventListener('pointermove', (event) => {
     return;
   }
   updateParallaxTargetFromPointer(event);
-});
+}, { signal: teardown.signal });
 
 // Keep the model perfectly still while tracing an arrow onto it, or while
 // trying to click one precisely in select mode — ambient parallax tilt
@@ -2332,7 +2371,7 @@ function advanceVideoTilt(t) {
 window.addEventListener('pointerenter', (event) => {
   if (IS_HERO && event.pointerType === 'touch' && event.pointerId !== heroTouchDragPointerId) return;
   updateParallaxTargetFromPointer(event);
-});
+}, { signal: teardown.signal });
 
 if (!IS_HERO) {
 window.addEventListener('pointerup', () => {
@@ -2350,7 +2389,7 @@ window.addEventListener('pointerup', () => {
     flushPanSync();
   }
   updateCubeCursor();
-});
+}, { signal: teardown.signal });
 } // end if (!IS_HERO) — pointerup drag reset
 
 if (IS_HERO) {
@@ -3295,7 +3334,7 @@ let batteryStack = null;
 let batteryStackEnabled = false;
 let batteryStackCount = BATTERY_COUNT_MAX;
 const BATTERY_MODELS = ['EP5', 'EP12'];
-let batteryModel = BATTERY_MODELS[0];
+let batteryModel = IS_EMBED ? embedScene.model : BATTERY_MODELS[0];
 let batteryStackAnimation = true;
 let batteryModelLoading = false;
 let batteryGreenTriangleRanges = [];
@@ -3332,13 +3371,18 @@ function stepBatteryCentering() {
   }
 }
 
+// The embed's host says whether motion is reduced; elsewhere the browser does.
+function prefersReducedMotion() {
+  return IS_EMBED ? embedScene.reducedMotion : window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
 function configureBatteryStack(count = batteryStackCount, enabled = batteryStackEnabled, animation = batteryStackAnimation, replay = false) {
   if (!batteryStack) return;
   if (!Number.isInteger(count) || count < BATTERY_COUNT_MIN || count > BATTERY_COUNT_MAX) return;
   batteryStackCount = count;
   batteryStackEnabled = !!enabled;
   batteryStackAnimation = !!animation;
-  const shouldAnimate = batteryStackAnimation && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const shouldAnimate = batteryStackAnimation && !prefersReducedMotion();
   batteryStack.configure(count, batteryStackEnabled, shouldAnimate, performance.now(), replay);
   if (!shouldAnimate) {
     batteryCenterY = batteryStack.centerOffset;
@@ -3453,7 +3497,7 @@ let batteryIntroPlayed = false;
 let batteryIntroInView = !IS_BATTERY_EMBED;
 
 function spreadBatteryForIntro(model) {
-  if (!batteryStackAnimation || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (!batteryStackAnimation || prefersReducedMotion()) return;
   // Convert the same screen-space gap to the module's stacking axis using
   // its projected length and the renderer's scale.
   const pxPerViewUnit = canvas.clientHeight / (2 * cubeProjectionHalfY);
@@ -3499,29 +3543,36 @@ async function loadBundledBatteryModel() {
   try {
     const [objText, mtlText] = await Promise.all(['obj', 'mtl'].map(async extension => {
       const texts = await Promise.all(assets.map(async name => {
-        const response = await fetch(`/models/${name}.${extension}`);
-        if (!response.ok) throw new Error(`Battery ${extension} file is unavailable.`);
+        const url = `${IS_EMBED ? embedScene.modelBaseUrl : '/models/'}${name}.${extension}`;
+        const response = await fetch(url, { signal: teardown.signal });
+        if (!response.ok) throw new Error(`Battery model file ${url} is unavailable.`);
         return response.text();
       }));
       return extension === 'obj' ? mergeObjTexts(texts) : texts.join('\n');
     }));
+    if (teardown.signal.aborted) return;
     const parsed = parseObj(objText, parseMtl(mtlText));
     if (!parsed) throw new Error('Battery model has no faces.');
     applyParsedModel(parsed, `${asset}.obj`, `${asset}.mtl`);
     focusBatteryModel(batteryModel);
     clearModelFlowPath();
+    if (IS_EMBED && !batteryStack) throw new Error(`${asset} is not the expected battery model.`);
     if (IS_BATTERY_ROUTE) {
-      // Both modules open with three batteries, centered before posing the
-      // assembly intro.
-      configureBatteryStack(3, true);
+      // Both modules open with three batteries (the embed, with however many
+      // its host last asked for), centered before posing the assembly intro.
+      configureBatteryStack(IS_EMBED ? embedScene.count : 3, true);
       batteryCenterY = batteryStack?.centerOffset ?? 0;
       batteryCenterVelocity = 0;
       batteryIntroPlayed = false;
       spreadBatteryForIntro();
       playBatteryIntro();
     }
+    if (IS_EMBED) embedScene.onReady();
   } catch (error) {
-    console.error(error);
+    // A scene destroyed mid-load has nobody left to report to.
+    if (teardown.signal.aborted) return;
+    if (IS_EMBED) embedScene.onError(error);
+    else console.error(error);
     cubeModelStatus = `Couldn't load ${asset}.obj`;
   } finally {
     batteryModelLoading = false;
@@ -3639,6 +3690,7 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = []) {
   cubeModelStatus = parsed.hasMaterials
     ? `${objName} (${triCount} tris, colors from ${mtlName})`
     : `${objName} (${triCount} tris, no materials found)`;
+  batteryFrame = null;
   if (batteryStack) {
     // Frame this newly added asset without changing the default scene or camera.
     resetCameraTarget();
@@ -3652,18 +3704,31 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = []) {
       maxZ: Math.max(...parsed.objects.map(object => object.bounds.maxZ)),
     };
     const center = [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2, (bounds.minZ + bounds.maxZ) / 2];
-    // Side-by-side models are viewed one at a time (see focusBatteryModel),
-    // so size to the larger of them rather than to the pair.
-    const zoomGoal = Math.min(...(batteryStack.frames ?? [{ center, bounds }])
-      .map(frame => computeCameraTargetGoalForObject(frame).zoomGoal));
-    setCubeSizePercent(zoomGoal * 100);
-    const scale = CUBE_SCALE * cubeSizeScale;
-    modelOffsetXPercent = -center[0] * scale / MODEL_POSITION_RANGE * 100;
-    modelOffsetYPercent = -center[1] * scale / MODEL_POSITION_RANGE * 100;
-    modelOffsetZPercent = -center[2] * scale / MODEL_POSITION_RANGE * 100;
+    batteryFrame = { center, bounds };
+    frameBatteryModel();
     resetCubeRotation();
   }
   notifyModelState();
+}
+
+// Sizes and centers the battery asset in the view. The fit depends on the
+// canvas's proportions, so the embed runs it again whenever its box changes
+// shape (see resize); every other route frames once, on load.
+let batteryFrame = null;
+function frameBatteryModel() {
+  if (!batteryStack || !batteryFrame) return;
+  // The fit below is worked out relative to the default size.
+  applyCubeSizePercent(100);
+  // Side-by-side models are viewed one at a time (see focusBatteryModel),
+  // so size to the larger of them rather than to the pair.
+  const zoomGoal = Math.min(...(batteryStack.frames ?? [batteryFrame])
+    .map(frame => computeCameraTargetGoalForObject(frame).zoomGoal));
+  setCubeSizePercent(zoomGoal * 100);
+  const scale = CUBE_SCALE * cubeSizeScale;
+  const { center } = batteryFrame;
+  modelOffsetXPercent = -center[0] * scale / MODEL_POSITION_RANGE * 100;
+  modelOffsetYPercent = -center[1] * scale / MODEL_POSITION_RANGE * 100;
+  modelOffsetZPercent = -center[2] * scale / MODEL_POSITION_RANGE * 100;
 }
 
 // Shared by the file-picker input and drag-and-drop below: given a loose
@@ -3933,7 +3998,7 @@ async function loadBundledDefaultModel() {
 // Drag-and-drop a .obj (+ optional .mtl) anywhere on the page as an
 // alternative to the file picker — same loadModelFromFiles path either way.
 // Not on the embedded battery: file drops there belong to the host page.
-if (!IS_HERO && !IS_BATTERY_EMBED) {
+if (IS_TOOL && !IS_BATTERY_EMBED) {
 window.addEventListener('dragover', (event) => {
   event.preventDefault();
 });
@@ -3942,7 +4007,7 @@ window.addEventListener('drop', (event) => {
   const files = Array.from(event.dataTransfer?.files || []);
   if (files.length) loadModelFromFiles(files);
 });
-} // end if (!IS_HERO && !IS_BATTERY_EMBED) — drag-and-drop model upload
+} // end if (IS_TOOL && !IS_BATTERY_EMBED) — drag-and-drop model upload
 
 // --- 3D flow arrows: draw one or more paths on the model's green parts, pulse follows each ---
 //
@@ -4762,7 +4827,7 @@ function recomputeModelFlowCoords() {
 function saveModelFlowPath() {
   if (IS_BATTERY_ROUTE) return;
   if (modelFlowPaths.length > 0) {
-    localStorage.setItem(
+    storage.setItem(
       MODEL_FLOW_STORAGE_KEY,
       JSON.stringify(modelFlowPaths.map((path) => ({
         points: path.points,
@@ -4773,7 +4838,7 @@ function saveModelFlowPath() {
       }))),
     );
   } else {
-    localStorage.removeItem(MODEL_FLOW_STORAGE_KEY);
+    storage.removeItem(MODEL_FLOW_STORAGE_KEY);
   }
 }
 
@@ -4814,7 +4879,7 @@ function buildModelFlowPathsFromData(dataArray) {
 // empty) baked-in default. Returns whether it actually found and applied
 // something.
 function restoreModelFlowPath() {
-  const raw = localStorage.getItem(MODEL_FLOW_STORAGE_KEY);
+  const raw = storage.getItem(MODEL_FLOW_STORAGE_KEY);
   if (!raw) return false;
   let saved;
   try {
@@ -5068,11 +5133,11 @@ function setModelFlowPointsVisible(value) {
 
 // Suppress the browser's right-click menu while drawing so right-drag reads
 // as a rotate gesture instead of popping up a context menu mid-drag.
-if (!IS_HERO) {
+if (IS_TOOL) {
 canvas.addEventListener('contextmenu', (event) => {
   if (modelFlowDrawMode) event.preventDefault();
 });
-} // end if (!IS_HERO) — flow-draw contextmenu suppression
+} // end if (IS_TOOL) — flow-draw contextmenu suppression
 
 // Pushes the current branch onto completedBranches, provided it has the 2+
 // points needed to form a real line — a lone point (e.g. a junction that
@@ -5160,7 +5225,7 @@ function finalizeModelFlowDrag() {
   notifyModelState();
 }
 
-if (!IS_HERO) {
+if (IS_TOOL) {
 canvas.addEventListener('pointerdown', (event) => {
   if (!blueprintEnabled) return;
   if (modelFlowSelectMode) {
@@ -5295,14 +5360,14 @@ canvas.addEventListener('pointerdown', (event) => {
   modelFlowLastClickTime = now;
   modelFlowLastClickPos = { x: event.clientX, y: event.clientY };
 });
-} // end if (!IS_HERO) — flow-draw/select pointerdown
+} // end if (IS_TOOL) — flow-draw/select pointerdown
 
 // Read by renderCubeFrame's rubber-band preview (always active) — declared
-// here, outside the `if (!IS_HERO)` guards, so it stays in scope regardless
+// here, outside the `if (IS_TOOL)` guards, so it stays in scope regardless
 // of build; only ever set non-null by the gated pointermove listener below.
 let modelFlowHoverClientPos = null;
 
-if (!IS_HERO) {
+if (IS_TOOL) {
 // Rubber-band preview: while a branch is mid-drag, renderCubeFrame draws a
 // dashed line from the last placed point out to wherever the cursor
 // currently raycasts onto the green mesh — showing where the next click
@@ -5347,7 +5412,7 @@ window.addEventListener('pointerup', (event) => {
   // double-click, both handled in the pointerdown listener above — pointerup
   // has nothing left to do for draw mode itself.
 });
-} // end if (!IS_HERO) — flow-draw rubber-band preview + select pointerup
+} // end if (IS_TOOL) — flow-draw rubber-band preview + select pointerup
 
 // Bottom-right axis gizmo: a small always-visible indicator of which way
 // object-space X/Y/Z currently point on screen, so panning/rotating (drag,
@@ -5364,15 +5429,16 @@ window.addEventListener('pointerup', (event) => {
 // lookup/size below is IS_HERO-guarded so module load never dereferences a
 // null canvas; drawAxisGizmo itself stays a normal top-level declaration
 // (its call site in renderCubeFrame is what's actually gated) so it's never
-// invoked in hero regardless.
-const axisGizmoCanvas = IS_HERO ? null : document.getElementById('axis-gizmo');
-const axisGizmoCtx = IS_HERO ? null : axisGizmoCanvas.getContext('2d');
+// invoked in hero regardless. The battery embed build has neither overlay
+// either, hence IS_TOOL rather than !IS_HERO.
+const axisGizmoCanvas = IS_TOOL ? document.getElementById('axis-gizmo') : null;
+const axisGizmoCtx = IS_TOOL ? axisGizmoCanvas.getContext('2d') : null;
 const AXIS_GIZMO_DPR = Math.max(1, window.devicePixelRatio || 1);
-if (!IS_HERO) {
+if (IS_TOOL) {
   axisGizmoCanvas.width = axisGizmoCanvas.clientWidth * AXIS_GIZMO_DPR || axisGizmoCanvas.width;
   axisGizmoCanvas.height = axisGizmoCanvas.clientHeight * AXIS_GIZMO_DPR || axisGizmoCanvas.height;
 }
-const AXIS_GIZMO_RADIUS = IS_HERO ? 0 : (axisGizmoCanvas.width / 2) * 0.68; // leaves room for the end labels within the canvas
+const AXIS_GIZMO_RADIUS = IS_TOOL ? (axisGizmoCanvas.width / 2) * 0.68 : 0; // leaves room for the end labels within the canvas
 const AXIS_GIZMO_LINE_WIDTH = 2 * AXIS_GIZMO_DPR;
 const AXIS_GIZMO_FONT = `${11 * AXIS_GIZMO_DPR}px ui-monospace, monospace`;
 // Standard red/green/blue = X/Y/Z convention (Blender, Three.js editor,
@@ -6282,7 +6348,7 @@ function renderCubeFrame() {
     }
   }
 
-  if (!IS_HERO && !IS_PREVIEW_ROUTE) drawAxisGizmo(rx, ry); // hidden on the preview routes, so not worth drawing
+  if (IS_TOOL && !IS_PREVIEW_ROUTE) drawAxisGizmo(rx, ry); // hidden on the preview routes, so not worth drawing
 }
 
 // Dynamic resolution scaling: canvas's WebGL backing store renders at up to
@@ -6712,8 +6778,12 @@ function resize() {
   // the same schedule. Using window.innerHeight here made the projection's
   // aspect ratio momentarily disagree with the canvas's real on-screen box
   // every time the bar moved, which read as the model visibly stretching.
-  const cssWidth = canvas.clientWidth;
-  const cssHeight = canvas.clientHeight;
+  // The embed measures the element its host sizes instead, and sits out a
+  // box with no area yet (a section mounted hidden) rather than dividing by it.
+  const box = IS_EMBED ? embedScene.root : canvas;
+  const cssWidth = box.clientWidth;
+  const cssHeight = box.clientHeight;
+  if (IS_EMBED && !(cssWidth > 0 && cssHeight > 0)) return;
   const rawWidth = Math.round(cssWidth * DPR);
   const rawHeight = Math.round(cssHeight * DPR);
   const capScale = Math.min(1, CANVAS_MAX_DIMENSION / Math.max(rawWidth, rawHeight));
@@ -6729,6 +6799,7 @@ function resize() {
   // this has to run after it, not before.
   updateHeroVerticalBias();
   updateScrollMobileVerticalBias();
+  if (IS_EMBED) frameBatteryModel();
 }
 
 // A pixel counts as "mainly green" if that channel is dominant by a clear
@@ -6784,7 +6855,7 @@ function isTargetMaterial(name) {
 // below still runs updateDynamicRenderScale for both builds (a genuine perf
 // feature, not just a dev overlay); only the DOM-writing/sparkline part is
 // hero-excluded.
-const perfMonitorEl = IS_HERO ? null : document.getElementById('perf-monitor-text');
+const perfMonitorEl = IS_TOOL ? document.getElementById('perf-monitor-text') : null;
 const PERF_DISPLAY_UPDATE_MS = 250; // readable refresh rate; measurement itself is still per-frame
 let perfLastFrameTime = performance.now();
 let perfFrameCount = 0;
@@ -6794,14 +6865,14 @@ let perfLastDisplayUpdate = perfLastFrameTime;
 // Rolling FPS sparkline (last 10s) — one point per display update, so a
 // dropped-frame stretch shows up as a visible dip instead of getting
 // smoothed away by the running min/max text above it.
-const perfHistoryCanvas = IS_HERO ? null : document.getElementById('perf-history');
-const perfHistoryCtx = IS_HERO ? null : perfHistoryCanvas.getContext('2d');
+const perfHistoryCanvas = IS_TOOL ? document.getElementById('perf-history') : null;
+const perfHistoryCtx = IS_TOOL ? perfHistoryCanvas.getContext('2d') : null;
 const PERF_HISTORY_WINDOW_MS = 10000;
 // Shared by drawPerfHistory's dashed reference line and its below-target red
 // dots, so both read against the same fps line.
 const PERF_HISTORY_TARGET_FPS = 45;
 const PERF_HISTORY_DPR = Math.max(1, window.devicePixelRatio || 1);
-if (!IS_HERO) {
+if (IS_TOOL) {
   perfHistoryCanvas.width = perfHistoryCanvas.clientWidth * PERF_HISTORY_DPR || perfHistoryCanvas.width;
   perfHistoryCanvas.height = perfHistoryCanvas.clientHeight * PERF_HISTORY_DPR || perfHistoryCanvas.height;
 }
@@ -6963,7 +7034,7 @@ function recordAndDisplayFrameTiming(now) {
     updateDynamicRenderScale(avgFrameMs);
     // Hidden on the preview routes — skipped there rather than kept up to
     // date behind visibility: hidden.
-    if (!IS_HERO && !IS_PREVIEW_ROUTE) {
+    if (IS_TOOL && !IS_PREVIEW_ROUTE) {
       perfMonitorEl.textContent =
         `${Math.round(renderScale * 100)}% res\n` +
         `${avgFrameMs.toFixed(1)} ms (${perfMinMs.toFixed(1)}–${perfMaxMs.toFixed(1)})\n` +
@@ -6995,7 +7066,7 @@ let canvasOnScreen = true;
 // every other page, and on a host page that leaves it out). A module
 // embedded as an iframe reports into the host page's element instead, when
 // the iframe names one in data-render-status (same-origin hosts only).
-const renderStatusEl = document.getElementById('render-status')
+const renderStatusEl = IS_EMBED ? null : document.getElementById('render-status')
   ?? window.frameElement?.ownerDocument.getElementById(window.frameElement.dataset.renderStatus ?? '');
 
 function setRenderLoopRunning(running) {
@@ -7015,7 +7086,7 @@ function startRenderLoop() {
 }
 
 function renderLoop(now) {
-  if (!canvasOnScreen) {
+  if (!canvasOnScreen || teardown.signal.aborted) {
     setRenderLoopRunning(false);
     return;
   }
@@ -7035,20 +7106,22 @@ function renderLoop(now) {
 
 // --- Init -----------------------------------------------------------------
 
-window.addEventListener('resize', resize);
+window.addEventListener('resize', resize, { signal: teardown.signal });
 resize();
 renderLoop();
 if (IS_BATTERY_EMBED) {
   // A little margin so the first frame is already drawn by the time the
   // section actually scrolls into view.
-  new IntersectionObserver(([entry]) => {
+  const onScreenObserver = new IntersectionObserver(([entry]) => {
     canvasOnScreen = entry.isIntersecting;
     if (canvasOnScreen) startRenderLoop();
-  }, { rootMargin: '200px 0px' }).observe(canvas);
+  }, { rootMargin: '200px 0px' });
+  onScreenObserver.observe(canvas);
   // The host page can resize this section without the window itself
   // resizing (a layout change, a collapsing sibling), which 'resize' alone
   // would never report.
-  new ResizeObserver(resize).observe(canvas);
+  const sizeObserver = new ResizeObserver(resize);
+  sizeObserver.observe(IS_EMBED ? embedScene.root : canvas);
   // The opening animation's own trigger (see playBatteryIntro): once, when
   // the canvas is within BATTERY_INTRO_LEAD_PX of being wholly in view —
   // i.e. no more than that much of its height is still off screen — so the
@@ -7067,9 +7140,33 @@ if (IS_BATTERY_EMBED) {
     playBatteryIntro();
   }, { threshold: Array.from({ length: 101 }, (_, i) => i / 100) });
   introObserver.observe(canvas);
+  teardown.signal.addEventListener('abort', () => {
+    onScreenObserver.disconnect();
+    sizeObserver.disconnect();
+    introObserver.disconnect();
+  });
 }
 if (IS_BATTERY_ROUTE) loadBundledBatteryModel();
 else loadBundledDefaultModel();
+
+// --- Battery embed API ---------------------------------------------------
+//
+// The embed build's only exposed surface, which battery-embed.js wraps into
+// what createBatteryScene returns. A count or model set while the files are
+// still loading is kept and applied when they arrive (see
+// loadBundledBatteryModel).
+if (IS_EMBED) {
+  embedScene.handle = {
+    setCount(count) {
+      embedScene.count = count;
+      configureBatteryStack(count);
+    },
+    setModel(model) {
+      batteryModel = model;
+      focusBatteryModel(model);
+    },
+  };
+}
 
 // --- React control panel bridge --------------------------------------------
 //

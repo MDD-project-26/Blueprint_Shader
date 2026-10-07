@@ -20,6 +20,10 @@
     "preview:explainer2": "vite preview --config vite.explainer2.config.ts",
     "build:battery": "vite build --config vite.battery.config.ts",
     "preview:battery": "vite preview --config vite.battery.config.ts",
+    "build:battery-sideways": "vite build --config vite.battery-sideways.config.ts",
+    "preview:battery-sideways": "vite preview --config vite.battery-sideways.config.ts",
+    "dev:battery-embed": "vite --config vite.battery-embed.config.ts",
+    "build:battery-embed": "vite build --config vite.battery-embed.config.ts",
     "build:all": "tsc -b && vite build && vite build --config vite.hero.config.ts --outDir dist --emptyOutDir false"
   },
   "dependencies": {

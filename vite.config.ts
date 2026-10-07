@@ -27,7 +27,7 @@ export default defineConfig({
       // `pnpm dev` could always serve it directly from disk. scroll-preview
       // .html is the same story — same main.js, just its own HTML with no
       // panel/perf-monitor/axis-gizmo. scroll-embed.html (the FE-team
-      // handover reference, see its own comments and HANDOVER.md) is the
+      // handover reference, see its own comments and handover/HANDOVER.md) is the
       // same story again — same bundle, not tree-shaken (the info card
       // ships as-is), just its own HTML demonstrating the sticky-section
       // embed structure. battery.html is index.html plus data-battery="true"

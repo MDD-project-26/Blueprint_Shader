@@ -1,9 +1,7 @@
 node_modules/
 dist/
 dist-hero/
-dist-canvas/
-dist-explainer-*/
-dist-battery/
+handover/dist-*/
 .DS_Store
 
 # Not referenced by index.html/main.js/src — unrelated prototype assets

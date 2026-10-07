@@ -12,9 +12,12 @@ import { defineConfig } from "vite"
 export default defineConfig({
   define: {
     __HERO__: "true",
+    // main.js's battery-embed flag (see vite.battery-embed.config.ts): spelled
+    // out so its embed-only branches are stripped here too.
+    __EMBED__: "false",
   },
   build: {
-    outDir: "dist-canvas",
+    outDir: "handover/dist-canvas",
     rollupOptions: {
       input: path.resolve(__dirname, "canvas.html"),
     },

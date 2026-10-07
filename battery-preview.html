@@ -170,11 +170,14 @@
 
     The independent EP5/EP12 sideways module follows the vertical stage.
     Its iframe can also be embedded on its own using battery-sideways.html.
+    Everything between the only:sideways markers is that second canvas; the
+    handover build (pnpm build:battery) strips it, and the sideways canvas
+    ships separately (pnpm build:battery-sideways, handover/HANDOVER.md Part D).
     The two .demo-placeholder sections only make this demo page scroll.
 
-    Integration notes for the FE team: HANDOVER.md Part C is the full
+    Integration notes for the FE team: handover/HANDOVER.md Part C is the full
     guide. In short — copy #battery-stage and its CSS, load the built JS
-    and CSS (pnpm build:battery → dist-battery/), and serve /assets/,
+    and CSS (pnpm build:battery → handover/dist-battery/), and serve /assets/,
     /fonts/ and /models/NGEN_assets.obj + .mtl from the site root. Leave
     the placeholders and .render-statuses behind.
   -->
@@ -190,12 +193,14 @@
     <div id="react-controls-root"></div>
   </div>
 
+  <!-- only:sideways:start -->
   <!-- A separate document gives the sideways module its own renderer,
        controls and animation state while sharing the existing render code. -->
   <iframe id="battery-sideways-module" src="/battery-sideways.html"
     data-render-status="render-status-sideways"
     title="EP5 and EP12 sideways battery stacking" loading="lazy"
     style="display:block;width:100%;height:100vh;height:100svh;margin-top:24px;border:0"></iframe>
+  <!-- only:sideways:end -->
 
   <section class="demo-placeholder">Your own page content — below the battery sections</section>
 
@@ -204,10 +209,12 @@
       <span class="render-status-label">Vertical stack</span>
       <span class="render-status-state" id="render-status">Rendering</span>
     </div>
+    <!-- only:sideways:start -->
     <div class="render-status" role="status">
       <span class="render-status-label">EP5 / EP12</span>
       <span class="render-status-state" id="render-status-sideways">Paused (off screen)</span>
     </div>
+    <!-- only:sideways:end -->
   </div>
 
   <script type="module" src="/src/main.tsx"></script>

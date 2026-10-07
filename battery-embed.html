@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bluprint Models — Battery Embed (FE handover)</title>
+<style>
+  /* Everything here is the demo host page's own. The module ships no CSS:
+     it only needs the element passed to createBatteryScene to have a size. */
+  body { margin: 0; font: 14px system-ui, sans-serif; color: #041c2c; }
+  .demo-placeholder { min-height: 60vh; display: grid; place-items: center; background: #041c2c; color: #fff; font-size: 20px; }
+  .demo-module { padding: 2rem; }
+  .demo-stage { height: 70vh; }
+  .demo-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin-top: 1rem; }
+  .demo-controls output { min-width: 5rem; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+  <!--
+    Reference page for battery-embed.js (handover/HANDOVER.md Part E): both
+    variants on one page, each driven by plain host-built controls, with a
+    Destroy/Create button standing in for a single-page app unmounting and
+    remounting the section. Run with `pnpm dev:battery-embed`.
+  -->
+  <section class="demo-placeholder">Your own page content — above the batteries</section>
+
+  <section class="demo-module" data-variant="vertical" data-count="3">
+    <div class="demo-stage"><canvas data-battery-canvas></canvas></div>
+    <div class="demo-controls">
+      <label>Units <input type="range" min="3" max="9" value="3" data-count-input /></label>
+      <button type="button" data-mount>Destroy</button>
+      <output></output>
+    </div>
+  </section>
+
+  <section class="demo-module" data-variant="sideways" data-count="3">
+    <div class="demo-stage"><canvas data-battery-canvas></canvas></div>
+    <div class="demo-controls">
+      <label>Units <input type="range" min="1" max="4" value="3" data-count-input /></label>
+      <button type="button" data-model="ep5">EP5</button>
+      <button type="button" data-model="ep12">EP12</button>
+      <button type="button" data-mount>Destroy</button>
+      <output></output>
+    </div>
+  </section>
+
+  <section class="demo-placeholder">Your own page content — below the batteries</section>
+
+  <script type="module">
+    import { createBatteryScene } from "/battery-embed.js";
+
+    for (const section of document.querySelectorAll(".demo-module")) {
+      const root = section.querySelector(".demo-stage");
+      const countInput = section.querySelector("[data-count-input]");
+      const mountButton = section.querySelector("[data-mount]");
+      const status = section.querySelector("output");
+      let model = "ep5";
+      let scene = null;
+
+      const mount = () => {
+        status.textContent = "Loading…";
+        scene = createBatteryScene(root, {
+          variant: section.dataset.variant,
+          count: Number(countInput.value),
+          model,
+          reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+          modelBaseUrl: "/models/",
+          onReady: () => { status.textContent = "Ready"; },
+          onError: (error) => { status.textContent = "Failed"; console.error(error); },
+        });
+        mountButton.textContent = "Destroy";
+      };
+      const unmount = () => {
+        scene.destroy();
+        scene = null;
+        status.textContent = "Destroyed";
+        mountButton.textContent = "Create";
+      };
+
+      countInput.addEventListener("input", () => scene?.setCount(Number(countInput.value)));
+      for (const button of section.querySelectorAll("[data-model]")) {
+        button.addEventListener("click", () => {
+          model = button.dataset.model;
+          scene?.setModel(model);
+        });
+      }
+      mountButton.addEventListener("click", () => (scene ? unmount() : mount()));
+      mount();
+    }
+  </script>
+</body>
+</html>
