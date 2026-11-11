@@ -1,8 +1,7 @@
-import { ArrowLeftRight } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Camera, Check, ChevronDown, TriangleAlert, X } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowBigRightDashIcon, type ArrowBigRightDashIconHandle } from "@/components/ui/arrow-big-right-dash";
 import { Button } from "@/components/ui/button";
-import { DeleteIcon, type DeleteIconHandle } from "@/components/ui/delete";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
@@ -10,12 +9,11 @@ import { MapPinIcon, type MapPinIconHandle } from "@/components/ui/map-pin";
 import { Separator } from "@/components/ui/separator";
 import { Slider, SliderValue } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { UndoIcon, type UndoIconHandle } from "@/components/ui/undo";
 import { UndoDotIcon, type UndoDotIconHandle } from "@/components/ui/undo-dot";
 import { UploadIcon, type UploadIconHandle } from "@/components/ui/upload";
-import { XIcon, type XIconHandle } from "@/components/ui/x";
 import { CARD_STEPS } from "@/content/cardSteps";
 import { cn } from "@/lib/utils";
+import { InstructionsModal } from "./instructions-modal";
 import { controls } from "../main.js";
 
 const CONTROLS_HIDDEN_KEY = "iconMosaic.controlsHidden";
@@ -240,6 +238,10 @@ export function Panel() {
   );
   const [state, setState] = useState(() => controls.getInitialState());
   const [isDraggingFile, setIsDraggingFile] = useState(false);
+  // Instructions guide (root route only, see isPlainRoute in main.js): open
+  // on every load, reopened with the I key.
+  const [guideOpen, setGuideOpen] = useState(() => !!controls.getInitialState().isPlainRoute);
+  const closeGuide = useCallback(() => setGuideOpen(false), []);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadModelIconPress = useIconPressHandlers<UploadIconHandle>();
@@ -250,34 +252,10 @@ export function Panel() {
   const goDefaultViewIconRef = useRef<ArrowBigRightDashIconHandle | null>(null);
   const resetRotationIconPress = useIconPressHandlers<UndoDotIconHandle>();
   const resetSizeIconPress = useIconPressHandlers<UndoDotIconHandle>();
-  const deleteArrowIconPress = useIconPressHandlers<DeleteIconHandle>();
-  const undoArrowIconPress = useIconPressHandlers<UndoIconHandle>();
-  const clearArrowsIconPress = useIconPressHandlers<XIconHandle>();
   const spaceIndicator = useTextSwap(!!state.spaceHeld, TEXT_SWAP_MS);
   const photoIndicator = useTextSwap(!!state.photoMode, TEXT_SWAP_MS);
-  const videoIndicator = useTextSwap(!!state.videoMode, TEXT_SWAP_MS);
-  const [videoCountdown, setVideoCountdown] = useState<number | null>(null);
-  const flowDrawIndicator = useTextSwap(!!state.modelFlowDrawMode, TEXT_SWAP_MS);
 
   useEffect(() => controls.subscribe((patch: object) => setState((s) => ({ ...s, ...patch }))), []);
-
-  // Countdown shown in the video-mode pill while a capture is running — main.js
-  // only tells the panel *that* it's recording (state.videoRecording), not a
-  // live progress tick, so the countdown is ticked down here from the fixed
-  // clip length it does expose (state.videoExportDurationMs). Starts fresh
-  // every time a recording begins; clears the moment it ends, whether that's
-  // the countdown reaching 0 or main.js flipping videoRecording off first.
-  useEffect(() => {
-    if (!state.videoRecording) {
-      setVideoCountdown(null);
-      return;
-    }
-    setVideoCountdown(Math.round((state.videoExportDurationMs ?? 10000) / 1000));
-    const id = window.setInterval(() => {
-      setVideoCountdown((s) => (s === null ? null : Math.max(0, s - 1)));
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [state.videoRecording, state.videoExportDurationMs]);
 
   useEffect(() => {
     // Never persists on the /scroll route — see the forced-hidden default
@@ -308,6 +286,19 @@ export function Panel() {
     window.addEventListener("keydown", onKeydown);
     return () => window.removeEventListener("keydown", onKeydown);
   }, [state.isPreviewRoute]);
+
+  useEffect(() => {
+    if (!state.isPlainRoute) return;
+    const onKeydown = (event: KeyboardEvent) => {
+      if (event.code !== "KeyI" || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+      const tag = (document.activeElement as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      event.preventDefault();
+      setGuideOpen(true);
+    };
+    window.addEventListener("keydown", onKeydown);
+    return () => window.removeEventListener("keydown", onKeydown);
+  }, [state.isPlainRoute]);
 
   useEffect(() => {
     // dragenter/dragleave fire repeatedly as the cursor crosses child element
@@ -352,15 +343,72 @@ export function Panel() {
   }, []);
 
   const overlayPhase = useRevealPhase(isDraggingFile, MODAL_CLOSE_MS);
+  const guidePhase = useRevealPhase(guideOpen, MODAL_CLOSE_MS);
   const panelPhase = useRevealPhase(!hidden, MODAL_CLOSE_MS);
   // /battery has no camera targets, so the section never opens there.
-  const cameraTargetsPhase = useRevealPhase(!state.isBatteryRoute && (state.customModelObjectNames?.length ?? 0) > 0, MODAL_CLOSE_MS);
+  const cameraTargetsPhase = useRevealPhase(!state.isBatteryRoute && !state.isPlainRoute && (state.customModelObjectNames?.length ?? 0) > 0, MODAL_CLOSE_MS);
   const photoOptionsPhase = useRevealPhase(!!state.photoMode, MODAL_CLOSE_MS);
   const lineWidthSliderPhase = useRevealPhase(!!state.photoUniformLineWidth, MODAL_CLOSE_MS);
-  const flowObjectsPhase = useRevealPhase((state.selectedFlowArrowObjects?.length ?? 0) > 0, MODAL_CLOSE_MS);
+  // Photo card's "Customise" disclosure (uniform line width lives behind
+  // it) — collapsed by default every time photo mode opens.
+  const [photoCustomizeOpen, setPhotoCustomizeOpen] = useState(false);
+  useEffect(() => {
+    if (!state.photoMode) setPhotoCustomizeOpen(false);
+  }, [state.photoMode]);
+  const photoCustomizePhase = useRevealPhase(photoCustomizeOpen, MODAL_CLOSE_MS);
+  // Shader Controls' "Customise patterns" disclosure (line/dot/plus sliders)
+  // — collapsed by default.
+  const [patternsOpen, setPatternsOpen] = useState(false);
+  const patternsPhase = useRevealPhase(patternsOpen, MODAL_CLOSE_MS);
+  // Quick-reset pills beside the Space pill: shown only while the model is
+  // off its default position (X/Y/height) or zoom (Model size 100%), and
+  // hidden with the rest of the UI when H is pressed.
+  const modelPositionMoved =
+    Math.round(state.modelOffsetX ?? 0) !== 0 ||
+    Math.round(state.modelOffsetY ?? 0) !== 0 ||
+    Math.round(state.modelOffsetZ ?? 0) !== 0;
+  const modelZoomChanged = Math.round(state.cubeSize ?? 100) !== 100;
+  const resetPositionPillPhase = useRevealPhase(!hidden && modelPositionMoved, MODAL_CLOSE_MS);
+  const resetZoomPillPhase = useRevealPhase(!hidden && modelZoomChanged, MODAL_CLOSE_MS);
+  // The export size follows the window's aspect ratio, so re-render on resize
+  // while photo mode is open; the value itself comes from main.js.
+  const [, setPhotoExportViewport] = useState(() => `${window.innerWidth}x${window.innerHeight}`);
+  useEffect(() => {
+    if (!state.photoMode) return;
+    const onResize = () => setPhotoExportViewport(`${window.innerWidth}x${window.innerHeight}`);
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [state.photoMode]);
+  const photoExportSize = controls.getPhotoExportSize(!!state.photoExport2x);
+  // Completion feedback: main.js bumps photoCaptureCount once a capture's
+  // PNG has actually been handed to the browser (button click or Enter), and
+  // the Capture button reads "Saved" for a beat.
+  const [captureSaved, setCaptureSaved] = useState(false);
+  const lastCaptureCountRef = useRef(state.photoCaptureCount ?? 0);
+  useEffect(() => {
+    const count = state.photoCaptureCount ?? 0;
+    if (count === lastCaptureCountRef.current) return;
+    lastCaptureCountRef.current = count;
+    setCaptureSaved(true);
+    const timer = window.setTimeout(() => setCaptureSaved(false), 1400);
+    return () => window.clearTimeout(timer);
+  }, [state.photoCaptureCount]);
   const sortedCustomModelObjectNames = [...(state.customModelObjectNames ?? [])].sort((a, b) =>
     a.localeCompare(b),
   );
+  // main.js's cubeModelStatus is one string — "name.obj (12,345 tris, colors
+  // from name.mtl)" on success, "Couldn't …" on failure. Split it so the
+  // file name and its details render as a title + muted meta line.
+  const modelStatus = useMemo(() => {
+    const status: string = state.cubeModelStatus ?? "";
+    if (!status) return null;
+    if (status.startsWith("Couldn't")) return { name: status, meta: "", isError: true };
+    const match = status.match(/^(.*) \((.*)\)$/);
+    return match
+      ? { name: match[1], meta: match[2].split(", ").join(" · "), isError: false }
+      : { name: status, meta: "", isError: false };
+  }, [state.cubeModelStatus]);
   // The card's step count should match however many Camera Target slots are
   // actually assigned, not the raw 7-slot capacity — cameraTargetActiveIndex
   // is a raw slot index (e.g. 5, if slots 0/2/5 are the only ones assigned),
@@ -565,6 +613,8 @@ export function Panel() {
 
   return (
     <>
+      {state.isPlainRoute && <InstructionsModal onClose={closeGuide} phase={guidePhase} />}
+
       {overlayPhase !== "closed" && (
         <div
           className={cn(
@@ -644,7 +694,19 @@ export function Panel() {
           skipped-listener effect above), so this hint would be actively
           misleading there — hidden rather than left dangling. */}
       {!state.isPreviewRoute && (
-        <div className="pointer-events-none fixed right-4 bottom-4 z-10 flex items-center gap-1.5 text-muted-foreground text-xs">
+        <div
+          className={cn(
+            "t-chrome t-chrome-bottom-right pointer-events-none fixed right-4 bottom-4 z-10 flex items-center gap-1.5 text-muted-foreground text-xs",
+            hidden && "is-panels-hidden",
+          )}
+        >
+          {state.isPlainRoute && (
+            <>
+              <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">I</Kbd>
+              instructions
+              <span aria-hidden="true" className="px-1">·</span>
+            </>
+          )}
           <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">H</Kbd>
           hides the panels
         </div>
@@ -672,66 +734,27 @@ export function Panel() {
 
       {panelPhase !== "closed" && (
         <div className="pointer-events-none fixed bottom-6 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-2">
-          {/* Flow draw mode does not exist on /battery (see setModelFlowDraw in main.js). */}
-          {!state.isBatteryRoute && (
-          <button
-            className={cn(
-              "t-fade-center pointer-events-auto cursor-pointer overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
-              flowDrawIndicator.displayed
-                ? "border-transparent bg-white text-black"
-                : "border-input bg-popover/80 text-foreground",
-              panelPhase === "open" && "is-open",
-              panelPhase === "closing" && "is-closing",
-            )}
-            onClick={() => {
-              const next = !state.modelFlowDrawMode;
-              controls.setModelFlowDraw(next);
-              // main.js resets position on enable, and disables rotation
-              // again on disable — mirror that here too, same as the
-              // dedicated "Reset position"/rotation controls do.
-              setState((s) => ({
-                ...s,
-                modelFlowDrawMode: next,
-                modelOffsetX: next ? 0 : s.modelOffsetX,
-                modelOffsetY: next ? 0 : s.modelOffsetY,
-                rotationDisabled: next ? s.rotationDisabled : true,
-              }));
-            }}
-            type="button"
-          >
-            <span
-              className={cn(
-                "t-text-swap",
-                flowDrawIndicator.phase === "exit" && (state.modelFlowDrawMode ? "is-exit-up" : "is-exit-down"),
-                flowDrawIndicator.phase === "enterStart" &&
-                  (state.modelFlowDrawMode ? "is-enter-from-bottom" : "is-enter-from-top"),
-              )}
-            >
-              {flowDrawIndicator.displayed ? (
-                <>
-                  Click to draw, double-click to finish,{" "}
-                  <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">A</Kbd> to exit
-                </>
-              ) : (
-                <>
-                  Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">A</Kbd> for flow draw mode
-                </>
-              )}
-            </span>
-          </button>
-          )}
-
           {!state.isScrollRoute && !state.isBatteryRoute && (
-          <div className="relative">
-            <div
+          <div>
+            {/* Clicking the pill does what P does: toggles photo mode (same
+                as the P handler in main.js). */}
+            <button
               className={cn(
                 "t-fade-center overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
+                "pointer-events-auto cursor-pointer",
                 photoIndicator.displayed
                   ? "border-transparent bg-white text-black"
                   : "border-input bg-popover/80 text-foreground",
                 panelPhase === "open" && "is-open",
                 panelPhase === "closing" && "is-closing",
               )}
+              onClick={(event) => {
+                // Drop focus so Enter goes to the photo-mode capture
+                // shortcut, not back to this focused button.
+                event.currentTarget.blur();
+                controls.setPhotoMode(!state.photoMode);
+              }}
+              type="button"
             >
               <span
                 className={cn(
@@ -743,8 +766,8 @@ export function Panel() {
               >
                 {photoIndicator.displayed ? (
                   <>
-                    Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">⇧P</Kbd> to
-                    capture, <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Esc</Kbd> to exit
+                    Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">P</Kbd> or{" "}
+                    <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Esc</Kbd> to exit photo mode
                   </>
                 ) : (
                   <>
@@ -752,17 +775,49 @@ export function Panel() {
                   </>
                 )}
               </span>
-            </div>
+            </button>
 
             {photoOptionsPhase !== "closed" && (
-              <div className="pointer-events-none absolute top-1/2 left-full ml-3 -translate-y-1/2">
+              <div className="pointer-events-none absolute bottom-0 left-full ml-3">
+                {/* Positioned against the whole fixed pill stack (its parent
+                    div deliberately isn't `relative`), so the card's bottom
+                    sits on the stack's bottom-6 line — same 24px viewport
+                    gap as the last pill — and it clears the widest pill on
+                    the right. Bottom-anchored, so "Customise" grows it
+                    upward only. */}
                 <div
                   className={cn(
-                    "t-fade-center pointer-events-auto flex w-72 flex-col gap-2 rounded-xl border border-input bg-popover/80 p-6 text-xs shadow-lg backdrop-blur-sm",
+                    "t-fade-center panel-material pointer-events-auto flex w-72 flex-col gap-3 rounded-[28px] border border-border p-4 text-xs",
                     photoOptionsPhase === "open" && "is-open",
                     photoOptionsPhase === "closing" && "is-closing",
                   )}
+                  // Grows out of the pill it's attached to (its bottom-left
+                  // corner, matching the bottom anchor above), not from its own
+                  // center — set inline since .t-fade-center pins
+                  // transform-origin to center.
+                  style={{ transformOrigin: "left bottom" }}
                 >
+                  {/* Header: title + close in one row, so the X sits in a
+                      predictable spot instead of floating over content. */}
+                  <div className="flex items-center justify-between gap-2 pl-1">
+                    <span className="flex items-center gap-2 font-semibold text-foreground text-sm tracking-[-0.011em]">
+                      <Camera className="size-4 text-muted-foreground" />
+                      Photo
+                    </span>
+                    <Button
+                      aria-label="Exit photo mode"
+                      className="-mr-1 rounded-full text-muted-foreground hover:text-foreground"
+                      onClick={() => controls.setPhotoMode(false)}
+                      size="icon-xs"
+                      variant="ghost"
+                    >
+                      <X className="size-3.5" />
+                    </Button>
+                  </div>
+                  {/* Settings grouped on one inset surface; radius nests
+                      inside the card's (28 - 16px padding = 12). */}
+                  <div className="flex flex-col gap-3 rounded-xl bg-white/4 px-3 py-3">
+                  <div className="flex items-center justify-between gap-2">
                   <Label className="gap-2.5 text-xs">
                     <Switch
                       checked={!!state.photoExport2x}
@@ -773,6 +828,41 @@ export function Panel() {
                     />
                     @2x resolution
                   </Label>
+                  {/* Exported pixel size for the current toggle + window
+                      aspect (resize re-renders, see setPhotoExportViewport). */}
+                  <span
+                    aria-live="polite"
+                    className="text-[11px] text-muted-foreground tabular-nums"
+                  >
+                    {photoExportSize.width} × {photoExportSize.height}
+                  </span>
+                  </div>
+                  {/* Uniform line width (and its slider) tucked behind a small
+                      disclosure link — an advanced option, one level deeper
+                      than the common path (@2x + Capture). */}
+                  <button
+                    aria-expanded={photoCustomizeOpen}
+                    className="flex w-fit cursor-pointer items-center gap-1 rounded-sm text-muted-foreground text-xs outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() => setPhotoCustomizeOpen((open) => !open)}
+                    type="button"
+                  >
+                    Customise
+                    <ChevronDown
+                      className={cn(
+                        "size-3.5 transition-transform duration-200 ease-out motion-reduce:transition-none",
+                        photoCustomizeOpen && "rotate-180",
+                      )}
+                    />
+                  </button>
+                  {photoCustomizePhase !== "closed" && (
+                  <div
+                    className={cn(
+                      "t-reveal",
+                      photoCustomizePhase === "open" && "is-open",
+                      photoCustomizePhase === "closing" && "is-closing",
+                    )}
+                  >
+                  <div className="flex flex-col gap-3 p-0.5">
                   <Label className="gap-2.5 text-xs">
                     <Switch
                       checked={!!state.photoUniformLineWidth}
@@ -811,87 +901,115 @@ export function Panel() {
                             <SliderValue className="text-xs text-muted-foreground" />
                           </div>
                         </Slider>
+                        <p className="mt-1 flex gap-1.5 text-[11px] text-muted-foreground leading-snug">
+                          <TriangleAlert aria-hidden="true" className="mt-px size-3 shrink-0 text-warning" />
+                          Changing the line width can produce results that aren't consistent with the brand. Use with
+                          caution.
+                        </p>
                       </Field>
                     </div>
                   )}
+                  </div>
+                  </div>
+                  )}
+                  </div>
+                  <Button
+                    className="h-10 w-full rounded-xl text-sm sm:h-10 sm:text-sm"
+                    onClick={() => controls.capturePhoto()}
+                    size="lg"
+                  >
+                    {captureSaved ? (
+                      <>
+                        <Check className="size-4" />
+                        Saved
+                      </>
+                    ) : (
+                      <>
+                        <Camera className="size-4" />
+                        Capture
+                        <Kbd className="ml-auto h-auto min-w-0 w-auto bg-black/8 p-1 text-[10px] text-primary-foreground/70 leading-none">
+                          Enter
+                        </Kbd>
+                      </>
+                    )}
+                  </Button>
                 </div>
               </div>
             )}
           </div>
           )}
 
-          {!state.isScrollRoute && !state.isBatteryRoute && (
-          <div
-            className={cn(
-              "t-fade-center overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
-              videoIndicator.displayed
-                ? "border-transparent bg-white text-black"
-                : "border-input bg-popover/80 text-foreground",
-              panelPhase === "open" && "is-open",
-              panelPhase === "closing" && "is-closing",
-            )}
-          >
-            <span
+          {/* Space pill + quick resets. The reset pills appear only once the
+              model is off its default position / zoom, and sit to the LEFT
+              of the Space pill (absolutely, so it stays centered and they
+              never collide with the photo card on the right). Each blurs
+              itself after a click so Space/P/Enter keep reaching main.js. */}
+          <div className="relative">
+            <div
               className={cn(
-                "t-text-swap",
-                videoIndicator.phase === "exit" && (state.videoMode ? "is-exit-up" : "is-exit-down"),
-                videoIndicator.phase === "enterStart" &&
-                  (state.videoMode ? "is-enter-from-bottom" : "is-enter-from-top"),
+                "t-fade-center overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
+                spaceIndicator.displayed
+                  ? "border-transparent bg-white text-black"
+                  : "border-input bg-popover/80 text-foreground",
+                panelPhase === "open" && "is-open",
+                panelPhase === "closing" && "is-closing",
               )}
             >
-              {videoIndicator.displayed ? (
-                state.videoRecording ? (
-                  <span className="inline-flex items-center gap-1.5">
-                    <span aria-hidden="true" className="t-record-dot size-1.5 shrink-0 rounded-full bg-destructive" />
-                    Recording video… {videoCountdown ?? Math.round((state.videoExportDurationMs ?? 10000) / 1000)}s
-                  </span>
-                ) : state.pngSequenceExporting ? (
-                  <span className="inline-flex items-center gap-1.5">
-                    <span aria-hidden="true" className="t-record-dot size-1.5 shrink-0 rounded-full bg-destructive" />
-                    Exporting PNG sequence… {Math.round((state.pngSequenceProgress ?? 0) * 100)}%
-                  </span>
+              <span
+                className={cn(
+                  "t-text-swap",
+                  spaceIndicator.phase === "exit" && (state.spaceHeld ? "is-exit-up" : "is-exit-down"),
+                  spaceIndicator.phase === "enterStart" &&
+                    (state.spaceHeld ? "is-enter-from-bottom" : "is-enter-from-top"),
+                )}
+              >
+                {spaceIndicator.displayed ? (
+                  "Release to confirm the new position"
                 ) : (
                   <>
-                    Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Enter</Kbd> to record,{" "}
-                    <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">⌘Enter</Kbd> for PNG sequence,{" "}
-                    <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">V</Kbd> to exit
+                    Hold <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Space</Kbd> to move the model
                   </>
-                )
-              ) : (
-                <>
-                  Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">V</Kbd> for video mode
-                </>
+                )}
+              </span>
+            </div>
+            <div className="pointer-events-none absolute top-1/2 right-full mr-2 flex -translate-y-1/2 items-center gap-2">
+              {resetZoomPillPhase !== "closed" && (
+                <button
+                  className={cn(
+                    "t-fade-center pointer-events-auto flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border border-transparent bg-white px-3 py-1.5 font-medium text-black text-xs shadow-lg backdrop-blur-sm transition-[background-color,scale] duration-100 ease-out hover:bg-white/90 active:scale-[0.97]",
+                    resetZoomPillPhase === "open" && "is-open",
+                    resetZoomPillPhase === "closing" && "is-closing",
+                  )}
+                  onClick={(event) => {
+                    event.currentTarget.blur();
+                    const clamped = controls.setCubeSizePercent(100);
+                    setState((s) => ({ ...s, cubeSize: clamped }));
+                  }}
+                  type="button"
+                >
+                  <UndoDotIcon className="size-3" />
+                  Reset zoom
+                </button>
               )}
-            </span>
-          </div>
-          )}
-
-          <div
-            className={cn(
-              "t-fade-center overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
-              spaceIndicator.displayed
-                ? "border-transparent bg-white text-black"
-                : "border-input bg-popover/80 text-foreground",
-              panelPhase === "open" && "is-open",
-              panelPhase === "closing" && "is-closing",
-            )}
-          >
-            <span
-              className={cn(
-                "t-text-swap",
-                spaceIndicator.phase === "exit" && (state.spaceHeld ? "is-exit-up" : "is-exit-down"),
-                spaceIndicator.phase === "enterStart" &&
-                  (state.spaceHeld ? "is-enter-from-bottom" : "is-enter-from-top"),
+              {resetPositionPillPhase !== "closed" && (
+                <button
+                  className={cn(
+                    "t-fade-center pointer-events-auto flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border border-transparent bg-white px-3 py-1.5 font-medium text-black text-xs shadow-lg backdrop-blur-sm transition-[background-color,scale] duration-100 ease-out hover:bg-white/90 active:scale-[0.97]",
+                    resetPositionPillPhase === "open" && "is-open",
+                    resetPositionPillPhase === "closing" && "is-closing",
+                  )}
+                  onClick={(event) => {
+                    event.currentTarget.blur();
+                    controls.resetModelPosition();
+                    setState((s) => ({ ...s, modelOffsetX: 0, modelOffsetY: 0, modelOffsetZ: 0 }));
+                  }}
+                  type="button"
+                >
+                  <UndoDotIcon className="size-3" />
+                  Reset position
+                </button>
               )}
-            >
-              {spaceIndicator.displayed ? (
-                "Release to return to default view"
-              ) : (
-                <>
-                  Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Space</Kbd> for bird's-eye view
-                </>
-              )}
-            </span>
+            </div>
           </div>
         </div>
       )}
@@ -899,15 +1017,15 @@ export function Panel() {
       {panelPhase !== "closed" && (
         <div
           className={cn(
-            "t-panel t-panel-left fixed top-4 left-4 z-10 max-h-[calc(100vh-2rem)] w-[min(92vw,17rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm",
+            "t-panel t-panel-left fixed top-4 left-4 z-10 max-h-[calc(100vh-2rem)] w-[min(92vw,17rem)] overflow-hidden panel-material rounded-[24px] border border-border text-popover-foreground text-sm",
             panelPhase === "open" && "is-open",
             panelPhase === "closing" && "is-closing",
           )}
         >
-          <div className="panel-scrollbar flex h-full max-h-[calc(100vh-2rem)] flex-col gap-6 overflow-y-auto p-6">
-            <h2 className="font-semibold text-base text-foreground">Model Controls</h2>
+          <div className="panel-scrollbar panel-scroll-edges flex h-full max-h-[calc(100vh-2rem)] flex-col gap-6 overflow-y-auto p-6">
+            <h2 className="font-semibold text-base text-foreground tracking-[-0.011em]">Model Controls</h2>
 
-            <div className="flex flex-wrap items-center gap-4">
+            <div className="flex flex-col gap-3">
               <input
                 ref={fileInputRef}
                 accept=".obj,.mtl"
@@ -919,21 +1037,45 @@ export function Panel() {
                 }}
                 type="file"
               />
-              <Button
+              {/* One full-width drop-zone tile: the action and its drag-and-drop
+                  alternative read as one control (title + hint), instead of a
+                  small button with loose text wrapping beside it. */}
+              <button
+                className="group flex w-full cursor-pointer items-center gap-3 rounded-xl border border-input border-dashed bg-input/40 px-3 py-2.5 text-left outline-none transition-[background-color,border-color,scale] duration-100 ease-out hover:border-ring/40 hover:bg-input/70 focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.98]"
                 onClick={() => fileInputRef.current?.click()}
                 onPointerDown={loadModelIconPress.onPointerDown}
                 onPointerLeave={loadModelIconPress.onPointerLeave}
                 onPointerUp={loadModelIconPress.onPointerUp}
-                size="xs"
-                variant="outline"
+                type="button"
               >
-                <UploadIcon className="size-3" ref={loadModelIconPress.ref} />
-                Load model…
-              </Button>
-              <span className="text-muted-foreground text-xs">or drop .obj/.mtl anywhere</span>
-              <span className="text-muted-foreground text-xs">{state.cubeModelStatus}</span>
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary">
+                  <UploadIcon className="size-4" ref={loadModelIconPress.ref} />
+                </span>
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span className="font-medium text-foreground text-xs">Load model…</span>
+                  <span className="text-[11px] text-muted-foreground leading-tight">or drop .obj + .mtl anywhere</span>
+                </span>
+              </button>
+              {modelStatus && (
+                <div className="flex min-w-0 flex-col gap-0.5 px-1" title={state.cubeModelStatus}>
+                  <span
+                    className={cn(
+                      "truncate font-medium text-xs",
+                      modelStatus.isError ? "text-destructive-foreground" : "text-foreground",
+                    )}
+                  >
+                    {modelStatus.name}
+                  </span>
+                  {modelStatus.meta && (
+                    <span className="truncate text-[11px] text-muted-foreground tabular-nums leading-tight">
+                      {modelStatus.meta}
+                    </span>
+                  )}
+                </div>
+              )}
               {state.isBatteryRoute && (
                 <Button
+                  className="w-full"
                   disabled={state.batteryModelLoading}
                   onClick={() => controls.loadBatteryModel()}
                   size="xs"
@@ -980,7 +1122,7 @@ export function Panel() {
               <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
                   <FieldLabel className="text-xs sm:text-xs">Model size</FieldLabel>
-                  <span className="text-muted-foreground text-xs tabular-nums">{state.cubeSize}%</span>
+                  <span className="text-muted-foreground text-xs tabular-nums">{Math.round(state.cubeSize)}%</span>
                 </div>
                 <Slider
                   max={state.cubeSizeMax}
@@ -1070,7 +1212,7 @@ export function Panel() {
               >
               <div className="flex flex-col gap-6">
                 <Separator />
-                <h2 className="font-semibold text-base text-foreground">Camera Targets</h2>
+                <h2 className="font-semibold text-base text-foreground tracking-[-0.011em]">Camera Targets</h2>
                 <div className="flex flex-col gap-4">
                   {/* Keep in sync with CAMERA_TARGET_SLOT_COUNT in main.js —
                       all 7 slots always render (most just "— none —" until
@@ -1105,7 +1247,7 @@ export function Panel() {
                           ))}
                         </select>
                         <Button
-                          className="shrink-0 transition-[color,background-color,border-color,box-shadow] duration-150"
+                          className="shrink-0 transition-[color,background-color,border-color,box-shadow,scale] duration-150"
                           disabled={!state.cameraTargetSlots?.[slotIndex] || state.editingDefaultView}
                           onClick={() => {
                             controls.goToCameraTarget(slotIndex);
@@ -1211,145 +1353,168 @@ export function Panel() {
 
             <Separator />
 
-            <h2 className="font-semibold text-base text-foreground">Shader Controls</h2>
-
-            <div className="flex items-center gap-4">
-              <Label className="gap-2.5 text-xs">
-                <Switch
-                  checked={!state.blueprintEnabled}
-                  onCheckedChange={(checked: boolean) => {
-                    const enabled = !checked;
-                    controls.setBlueprintEnabled(enabled);
-                    setState((s) => ({ ...s, blueprintEnabled: enabled }));
-                  }}
-                />
-                Hide blueprint shader
-              </Label>
-            </div>
+            <h2 className="font-semibold text-base text-foreground tracking-[-0.011em]">Shader Controls</h2>
 
             <div className="flex items-center gap-4">
               <Field className="flex-1 gap-3">
                 <FieldLabel className="text-xs sm:text-xs">Shader theme</FieldLabel>
-                <div className="flex gap-2">
-                  <Button
-                    className="flex-1"
-                    onClick={() => {
-                      controls.setShaderTheme("dark");
-                      setState((s) => ({ ...s, shaderTheme: "dark" }));
-                    }}
-                    size="xs"
-                    variant={state.shaderTheme === "dark" ? "default" : "outline"}
-                  >
-                    Dark
-                  </Button>
-                  <Button
-                    className="flex-1"
-                    onClick={() => {
-                      controls.setShaderTheme("light");
-                      setState((s) => ({ ...s, shaderTheme: "light" }));
-                    }}
-                    size="xs"
-                    variant={state.shaderTheme === "light" ? "default" : "outline"}
-                  >
-                    Light
-                  </Button>
+                {/* Segmented control — one sliding thumb (see
+                    .t-segmented-thumb in index.css) instead of two
+                    independent filled/outline buttons. */}
+                <div className="relative grid h-8 w-full grid-cols-2 rounded-lg bg-input p-0.5 sm:h-7">
+                  <span
+                    aria-hidden="true"
+                    className="t-segmented-thumb pointer-events-none absolute inset-y-0.5 left-0.5 w-[calc(50%-2px)] rounded-md bg-primary shadow-xs"
+                    style={{ translate: state.shaderTheme === "light" ? "100% 0" : "0 0" }}
+                  />
+                  {(["dark", "light"] as const).map((theme) => (
+                    <button
+                      aria-pressed={state.shaderTheme === theme}
+                      className={cn(
+                        "relative cursor-pointer rounded-md font-medium text-sm outline-none transition-[color,scale] duration-100 ease-out focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.97] sm:text-xs",
+                        state.shaderTheme === theme ? "text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+                      )}
+                      key={theme}
+                      onClick={() => {
+                        controls.setShaderTheme(theme);
+                        setState((s) => ({ ...s, shaderTheme: theme }));
+                      }}
+                      type="button"
+                    >
+                      {theme === "dark" ? "Dark" : "Light"}
+                    </button>
+                  ))}
                 </div>
               </Field>
             </div>
 
-            <div className="flex items-center gap-4">
-              <Field className="flex-1 gap-3">
-                <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs sm:text-xs">Line frequency</FieldLabel>
-                  <span className="text-muted-foreground text-xs tabular-nums">{state.lineFrequency}</span>
+            {/* Pattern sliders tucked behind a "Customise patterns"
+                disclosure — same pattern as the photo card's Customise link:
+                fine-tuning, one level below the common controls. */}
+            <button
+              aria-expanded={patternsOpen}
+              className="-mt-2 flex w-fit cursor-pointer items-center gap-1 rounded-sm text-muted-foreground text-xs outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => setPatternsOpen((open) => !open)}
+              type="button"
+            >
+              Customise patterns
+              <ChevronDown
+                className={cn(
+                  "size-3.5 transition-transform duration-200 ease-out motion-reduce:transition-none",
+                  patternsOpen && "rotate-180",
+                )}
+              />
+            </button>
+            {patternsPhase !== "closed" && (
+              <div
+                className={cn(
+                  "t-reveal -my-3",
+                  patternsPhase === "open" && "is-open",
+                  patternsPhase === "closing" && "is-closing",
+                )}
+              >
+                {/* Padding gives the sliders' thumbs and focus rings room
+                    inside .t-reveal's clipping child. */}
+                <div className="-mx-1 flex flex-col gap-6 px-1 py-3">
+                <div className="flex items-center gap-4">
+                  <Field className="flex-1 gap-3">
+                    <div className="flex w-full items-center justify-between gap-1">
+                      <FieldLabel className="text-xs sm:text-xs">Line frequency</FieldLabel>
+                      <span className="text-muted-foreground text-xs tabular-nums">{state.lineFrequency}</span>
+                    </div>
+                    <Slider
+                      max={state.lineFrequencyMax}
+                      min={state.lineFrequencyMin}
+                      onValueChange={(value: number | readonly number[]) => {
+                        const clamped = controls.setLineFrequency(value as number);
+                        setState((s) => ({ ...s, lineFrequency: clamped }));
+                      }}
+                      value={state.lineFrequency}
+                    />
+                  </Field>
                 </div>
-                <Slider
-                  max={state.lineFrequencyMax}
-                  min={state.lineFrequencyMin}
-                  onValueChange={(value: number | readonly number[]) => {
-                    const clamped = controls.setLineFrequency(value as number);
-                    setState((s) => ({ ...s, lineFrequency: clamped }));
-                  }}
-                  value={state.lineFrequency}
-                />
-              </Field>
-            </div>
 
-            <div className="flex items-center gap-4">
-              <Field className="flex-1 gap-3">
-                <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs sm:text-xs">Dot frequency</FieldLabel>
-                  <span className="text-muted-foreground text-xs tabular-nums">{state.dotFrequency}</span>
+                <div className="flex items-center gap-4">
+                  <Field className="flex-1 gap-3">
+                    <div className="flex w-full items-center justify-between gap-1">
+                      <FieldLabel className="text-xs sm:text-xs">Dot frequency</FieldLabel>
+                      <span className="text-muted-foreground text-xs tabular-nums">{state.dotFrequency}</span>
+                    </div>
+                    <Slider
+                      max={state.dotFrequencyMax}
+                      min={state.dotFrequencyMin}
+                      onValueChange={(value: number | readonly number[]) => {
+                        const clamped = controls.setDotFrequency(value as number);
+                        setState((s) => ({ ...s, dotFrequency: clamped }));
+                      }}
+                      value={state.dotFrequency}
+                    />
+                  </Field>
                 </div>
-                <Slider
-                  max={state.dotFrequencyMax}
-                  min={state.dotFrequencyMin}
-                  onValueChange={(value: number | readonly number[]) => {
-                    const clamped = controls.setDotFrequency(value as number);
-                    setState((s) => ({ ...s, dotFrequency: clamped }));
-                  }}
-                  value={state.dotFrequency}
-                />
-              </Field>
-            </div>
 
-            <div className="flex items-center gap-4">
-              <Field className="flex-1 gap-3">
-                <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs sm:text-xs">Dot size</FieldLabel>
-                  <span className="text-muted-foreground text-xs tabular-nums">{state.dotSize}%</span>
+                <div className="flex items-center gap-4">
+                  <Field className="flex-1 gap-3">
+                    <div className="flex w-full items-center justify-between gap-1">
+                      <FieldLabel className="text-xs sm:text-xs">Dot size</FieldLabel>
+                      <span className="text-muted-foreground text-xs tabular-nums">{state.dotSize}%</span>
+                    </div>
+                    <Slider
+                      max={state.dotSizeMax}
+                      min={state.dotSizeMin}
+                      onValueChange={(value: number | readonly number[]) => {
+                        const clamped = controls.setDotSizePercent(value as number);
+                        setState((s) => ({ ...s, dotSize: clamped }));
+                      }}
+                      value={state.dotSize}
+                    />
+                  </Field>
                 </div>
-                <Slider
-                  max={state.dotSizeMax}
-                  min={state.dotSizeMin}
-                  onValueChange={(value: number | readonly number[]) => {
-                    const clamped = controls.setDotSizePercent(value as number);
-                    setState((s) => ({ ...s, dotSize: clamped }));
-                  }}
-                  value={state.dotSize}
-                />
-              </Field>
-            </div>
 
-            <div className="flex items-center gap-4">
-              <Field className="flex-1 gap-3">
-                <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs sm:text-xs">Plus frequency</FieldLabel>
-                  <span className="text-muted-foreground text-xs tabular-nums">{state.plusFrequency}</span>
+                <div className="flex items-center gap-4">
+                  <Field className="flex-1 gap-3">
+                    <div className="flex w-full items-center justify-between gap-1">
+                      <FieldLabel className="text-xs sm:text-xs">Plus frequency</FieldLabel>
+                      <span className="text-muted-foreground text-xs tabular-nums">{state.plusFrequency}</span>
+                    </div>
+                    <Slider
+                      max={state.plusFrequencyMax}
+                      min={state.plusFrequencyMin}
+                      onValueChange={(value: number | readonly number[]) => {
+                        const clamped = controls.setPlusFrequency(value as number);
+                        setState((s) => ({ ...s, plusFrequency: clamped }));
+                      }}
+                      value={state.plusFrequency}
+                    />
+                  </Field>
                 </div>
-                <Slider
-                  max={state.plusFrequencyMax}
-                  min={state.plusFrequencyMin}
-                  onValueChange={(value: number | readonly number[]) => {
-                    const clamped = controls.setPlusFrequency(value as number);
-                    setState((s) => ({ ...s, plusFrequency: clamped }));
-                  }}
-                  value={state.plusFrequency}
-                />
-              </Field>
-            </div>
 
-            <div className="flex items-center gap-4">
-              <Field className="flex-1 gap-3">
-                <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs sm:text-xs">Plus size</FieldLabel>
-                  <span className="text-muted-foreground text-xs tabular-nums">{state.plusSize}%</span>
+                <div className="flex items-center gap-4">
+                  <Field className="flex-1 gap-3">
+                    <div className="flex w-full items-center justify-between gap-1">
+                      <FieldLabel className="text-xs sm:text-xs">Plus size</FieldLabel>
+                      <span className="text-muted-foreground text-xs tabular-nums">{state.plusSize}%</span>
+                    </div>
+                    <Slider
+                      max={state.plusSizeMax}
+                      min={state.plusSizeMin}
+                      onValueChange={(value: number | readonly number[]) => {
+                        const clamped = controls.setPlusSizePercent(value as number);
+                        setState((s) => ({ ...s, plusSize: clamped }));
+                      }}
+                      value={state.plusSize}
+                    />
+                  </Field>
                 </div>
-                <Slider
-                  max={state.plusSizeMax}
-                  min={state.plusSizeMin}
-                  onValueChange={(value: number | readonly number[]) => {
-                    const clamped = controls.setPlusSizePercent(value as number);
-                    setState((s) => ({ ...s, plusSize: clamped }));
-                  }}
-                  value={state.plusSize}
-                />
-              </Field>
-            </div>
+                </div>
+              </div>
+            )}
 
             <Separator />
 
-            <h2 className="font-semibold text-base text-foreground">Light controls</h2>
+            {/* No light controls on the root route (see isPlainRoute in main.js). */}
+            {!state.isPlainRoute && (
+            <>
+            <h2 className="font-semibold text-base text-foreground tracking-[-0.011em]">Light controls</h2>
 
             <div className="flex items-center gap-4">
               <Field className="flex-1 gap-3">
@@ -1408,8 +1573,10 @@ export function Panel() {
             </div>
 
             <Separator />
+            </>
+            )}
 
-            <h2 className="font-semibold text-base text-foreground">Interaction Controls</h2>
+            <h2 className="font-semibold text-base text-foreground tracking-[-0.011em]">Interaction Controls</h2>
 
             {/* The hover orbit is off on /battery, so its switch is too. */}
             {!state.isBatteryRoute && (
@@ -1458,256 +1625,6 @@ export function Panel() {
                 <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">⇧R</Kbd>
               </Button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* /battery has no flow arrows, so no Flow Controls panel either. */}
-      {panelPhase !== "closed" && !state.isBatteryRoute && (
-        <div
-          className={cn(
-            "t-panel t-panel-right fixed top-4 right-4 z-10 max-h-[calc(100vh-2rem)] w-[min(92vw,13rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm",
-            panelPhase === "open" && "is-open",
-            panelPhase === "closing" && "is-closing",
-          )}
-        >
-          <div className="panel-scrollbar flex h-full max-h-[calc(100vh-2rem)] flex-col gap-6 overflow-y-auto p-6">
-            <h2 className="font-semibold text-base text-foreground">Flow Controls</h2>
-
-            <div className="flex flex-wrap items-center gap-4">
-              <Label className="gap-2.5 text-xs">
-                <Switch
-                  checked={state.showModelFlowArrow}
-                  onCheckedChange={(checked: boolean) => {
-                    controls.setModelFlowArrowVisible(checked);
-                    setState((s) => ({ ...s, showModelFlowArrow: checked }));
-                  }}
-                />
-                Show arrows
-              </Label>
-              <Label className={cn("gap-2.5 text-xs", !state.showModelFlowArrow && "opacity-40")}>
-                <Switch
-                  checked={state.showModelFlowPoints}
-                  disabled={!state.showModelFlowArrow}
-                  onCheckedChange={(checked: boolean) => {
-                    controls.setModelFlowPointsVisible(checked);
-                    setState((s) => ({ ...s, showModelFlowPoints: checked }));
-                  }}
-                />
-                Show points &amp; junctions
-              </Label>
-              <Label className={cn("gap-2.5 text-xs", !state.showModelFlowArrow && "opacity-40")}>
-                <Switch
-                  checked={!!state.modelFlowSelectMode}
-                  disabled={!state.showModelFlowArrow}
-                  onCheckedChange={(checked: boolean) => controls.setModelFlowSelectMode(checked)}
-                />
-                Select arrow
-              </Label>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                disabled={state.selectedFlowArrowIndex == null}
-                onClick={() => controls.deleteSelectedModelFlowArrow()}
-                onPointerDown={deleteArrowIconPress.onPointerDown}
-                onPointerLeave={deleteArrowIconPress.onPointerLeave}
-                onPointerUp={deleteArrowIconPress.onPointerUp}
-                size="xs"
-                variant="outline"
-              >
-                <DeleteIcon className="size-3" ref={deleteArrowIconPress.ref} />
-                Delete selected
-                <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Del</Kbd>
-              </Button>
-              <Button
-                disabled={state.selectedFlowArrowIndex == null}
-                onClick={() => controls.reverseSelectedFlowArrow()}
-                size="xs"
-                variant={state.selectedFlowArrowReversed ? "default" : "outline"}
-              >
-                <ArrowLeftRight className="size-3" />
-                Reverse flow
-              </Button>
-              <Button
-                onClick={() => controls.undoModelFlowArrow()}
-                onPointerDown={undoArrowIconPress.onPointerDown}
-                onPointerLeave={undoArrowIconPress.onPointerLeave}
-                onPointerUp={undoArrowIconPress.onPointerUp}
-                size="xs"
-                variant="outline"
-              >
-                <UndoIcon className="size-3" ref={undoArrowIconPress.ref} />
-                Undo last arrow
-                <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">⌘Z</Kbd>
-              </Button>
-              <Button
-                onClick={() => controls.clearModelFlow()}
-                onPointerDown={clearArrowsIconPress.onPointerDown}
-                onPointerLeave={clearArrowsIconPress.onPointerLeave}
-                onPointerUp={clearArrowsIconPress.onPointerUp}
-                size="xs"
-                variant="outline"
-              >
-                <XIcon className="size-3" ref={clearArrowsIconPress.ref} />
-                Clear arrows
-              </Button>
-            </div>
-
-            {flowObjectsPhase !== "closed" && (
-              <div
-                className={cn(
-                  "t-reveal",
-                  flowObjectsPhase === "open" && "is-open",
-                  flowObjectsPhase === "closing" && "is-closing",
-                )}
-              >
-              <div className="flex flex-col gap-2">
-                <span className="text-muted-foreground text-xs">
-                  Selected arrow affects
-                </span>
-                {(state.selectedFlowArrowObjects ?? []).map((obj: { index: number; name: string; enabled: boolean }) => (
-                  <Label className="gap-2.5 text-xs" key={obj.index}>
-                    <Switch
-                      checked={obj.enabled}
-                      onCheckedChange={(checked: boolean) => {
-                        controls.setFlowArrowObjectEnabled(obj.index, checked);
-                        setState((s) => ({
-                          ...s,
-                          selectedFlowArrowObjects: s.selectedFlowArrowObjects.map((o: typeof obj) =>
-                            o.index === obj.index ? { ...o, enabled: checked } : o,
-                          ),
-                        }));
-                      }}
-                    />
-                    {obj.name}
-                  </Label>
-                ))}
-              </div>
-              </div>
-            )}
-
-            <Field>
-              <Slider
-                max={30}
-                min={0.1}
-                step={0.1}
-                onValueChange={(value: number | readonly number[]) => {
-                  const width = value as number;
-                  controls.setPulseWidth(width);
-                  setState((s) => ({ ...s, pulseWidth: width }));
-                }}
-                value={state.pulseWidth}
-              >
-                <div className="mb-3 flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs sm:text-xs">Pulse width</FieldLabel>
-                  <SliderValue className="text-xs text-muted-foreground" />
-                </div>
-              </Slider>
-            </Field>
-
-            <Field>
-              <Slider
-                max={state.flowPulseFrequencyMax}
-                min={state.flowPulseFrequencyMin}
-                onValueChange={(value: number | readonly number[]) => {
-                  const frequency = value as number;
-                  controls.setFlowPulseFrequency(frequency);
-                  setState((s) => ({ ...s, flowPulseFrequency: frequency }));
-                }}
-                value={state.flowPulseFrequency}
-              >
-                <div className="mb-3 flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs sm:text-xs">Pulse frequency</FieldLabel>
-                  <SliderValue className="text-xs text-muted-foreground" />
-                </div>
-              </Slider>
-            </Field>
-
-            <Field>
-              <Slider
-                max={state.flowSpeedMax}
-                min={state.flowSpeedMin}
-                onValueChange={(value: number | readonly number[]) => {
-                  const speed = value as number;
-                  controls.setFlowSpeedPercent(speed);
-                  setState((s) => ({ ...s, flowSpeed: speed }));
-                }}
-                value={state.flowSpeed}
-              >
-                <div className="mb-3 flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs sm:text-xs">Flow speed</FieldLabel>
-                  <SliderValue className="text-xs text-muted-foreground" />
-                </div>
-              </Slider>
-            </Field>
-
-            <Field>
-              <Slider
-                max={state.flowCoreLengthMax}
-                min={state.flowCoreLengthMin}
-                onValueChange={(value: number | readonly number[]) => {
-                  const length = value as number;
-                  controls.setFlowCoreLengthPercent(length);
-                  setState((s) => ({ ...s, flowCoreLength: length }));
-                }}
-                value={state.flowCoreLength}
-              >
-                <div className="mb-3 flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs sm:text-xs">Core length</FieldLabel>
-                  <SliderValue className="text-xs text-muted-foreground" />
-                </div>
-              </Slider>
-            </Field>
-
-            <Label className="gap-2.5 text-xs">
-              <Switch
-                checked={state.flowTailVisible}
-                onCheckedChange={(checked: boolean) => {
-                  controls.setFlowTailVisible(checked);
-                  setState((s) => ({ ...s, flowTailVisible: checked }));
-                }}
-              />
-              Show tail
-            </Label>
-
-            <Field className={cn(!state.flowTailVisible && "opacity-40")}>
-              <Slider
-                disabled={!state.flowTailVisible}
-                max={state.flowTailLengthMax}
-                min={state.flowTailLengthMin}
-                onValueChange={(value: number | readonly number[]) => {
-                  const length = value as number;
-                  controls.setFlowTailLengthPercent(length);
-                  setState((s) => ({ ...s, flowTailLength: length }));
-                }}
-                value={state.flowTailLength}
-              >
-                <div className="mb-3 flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs sm:text-xs">Tail length</FieldLabel>
-                  <SliderValue className="text-xs text-muted-foreground" />
-                </div>
-              </Slider>
-            </Field>
-
-            <Field className={cn(!state.flowTailVisible && "opacity-40")}>
-              <Slider
-                disabled={!state.flowTailVisible}
-                max={state.flowTailFalloffMax}
-                min={state.flowTailFalloffMin}
-                onValueChange={(value: number | readonly number[]) => {
-                  const falloff = value as number;
-                  controls.setFlowTailFalloff(falloff);
-                  setState((s) => ({ ...s, flowTailFalloff: falloff }));
-                }}
-                value={state.flowTailFalloff}
-              >
-                <div className="mb-3 flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs sm:text-xs">Tail falloff</FieldLabel>
-                  <SliderValue className="text-xs text-muted-foreground" />
-                </div>
-              </Slider>
-            </Field>
           </div>
         </div>
       )}

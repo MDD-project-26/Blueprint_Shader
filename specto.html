@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bluprint Models — Specto</title>
+<link rel="icon" type="image/png" href="/favicon.png" />
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+  }
+  #perf-monitor {
+    position: fixed;
+    top: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    padding: 6px 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    color: rgba(255, 255, 255, 0.85);
+    font-family: "Geist Mono", ui-monospace, monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    user-select: none;
+  }
+  #perf-monitor-text {
+    white-space: pre;
+  }
+  #perf-history {
+    display: block;
+    width: 140px;
+    height: 32px;
+    margin-top: 6px;
+  }
+  #axis-gizmo {
+    display: block;
+    position: fixed;
+    bottom: 1rem;
+    right: 1rem;
+    z-index: 10;
+    width: 84px;
+    height: 84px;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+  <!--
+    The full original tool (what / used to be): opening camera move into
+    Camera Target 1 and the Camera Targets panel section. index.html is the
+    same bundle with data-plain="true" (see IS_PLAIN_ROUTE in main.js).
+  -->
+  <canvas id="canvas"></canvas>
+  <div id="perf-monitor">
+    <div id="perf-monitor-text"></div>
+    <canvas height="32" id="perf-history" width="140"></canvas>
+  </div>
+  <canvas height="84" id="axis-gizmo" width="84"></canvas>
+  <div id="react-controls-root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

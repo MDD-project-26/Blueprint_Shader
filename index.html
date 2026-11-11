@@ -59,7 +59,14 @@
 </style>
 </head>
 <body>
-  <canvas id="canvas"></canvas>
+  <!--
+    Same tool as specto.html (same /main.js and /src/main.tsx, full control
+    panel), except data-plain="true": main.js reads that (as IS_PLAIN_ROUTE)
+    to skip the opening camera move, so the model starts at its default
+    view, and to drop Camera Targets entirely (no slots, no 1-7 keys, no
+    panel section).
+  -->
+  <canvas id="canvas" data-plain="true"></canvas>
   <div id="perf-monitor">
     <div id="perf-monitor-text"></div>
     <canvas height="32" id="perf-history" width="140"></canvas>

@@ -1,13 +1,14 @@
-// Only used by captureVideo() (video-mode Enter, tool build only) to encode
-// frames into a real MP4 via WebCodecs instead of a real-time MediaRecorder
-// stream — see that function's own comment. Static top-level import so
-// Rollup can tree-shake it (and this whole dependency) out of the hero/
-// canvas builds once captureVideo's only call site, inside an
-// `if (!IS_HERO)` block, is stripped by Terser — verified via
-// `pnpm build:hero`/`build:canvas` after adding this.
-import { BufferTarget, CanvasSource, getFirstEncodableVideoCodec, Mp4OutputFormat, Output, Quality } from 'mediabunny';
 import { createBatteryStack } from './battery-stack.js';
 import { createSidewaysBatteryStack, mergeObjTexts } from './battery-sideways-stack.js';
+
+// Dev only: an edit to this file must full-reload the page, never hot-swap.
+// This module runs twice-referenced — the HTML's own <script> (the live
+// scene) and src/panel.tsx's `import { controls }` — so a hot update would
+// hand the panel a second, fresh instance whose state (photoMode etc.) the
+// scene never sees: panel buttons like the photo card's X silently act on
+// the wrong copy while keyboard shortcuts still hit the original. Declining
+// makes Vite reload instead. Stripped from production builds.
+if (import.meta.hot) import.meta.hot.decline();
 
 // --- Config ---------------------------------------------------------------
 
@@ -55,12 +56,12 @@ const canvas = IS_EMBED ? embedScene.canvas : document.getElementById('canvas');
 // data-scroll="true" on the canvas element) for the "/scroll" route: the
 // full tool (panel, keyboard shortcuts, drag/pan/zoom, flow-arrow drawing,
 // model upload, perf-monitor/axis-gizmo — none of that is stripped), minus
-// photo/video mode (see the P/V keydown handlers below) and minus
+// photo mode (see the P keydown handler below) and minus
 // loadBundledDefaultModel's opening camera move (bird's-eye drop, yaw
 // settle, push into Camera Target 1) — the model just appears already
 // sitting at its resting pose. Live hover-parallax tilt
 // (updateParallaxTargetFromPointer) is unaffected either way; it doesn't
-// route through the intro tweens or photo/video mode.
+// route through the intro tweens or photo mode.
 const IS_SCROLL_ROUTE = !IS_EMBED && canvas?.dataset.scroll === 'true';
 // scroll-preview.html sets both data-scroll and data-preview — it's the
 // same IS_SCROLL_ROUTE experience (scroll-driven camera, bottom-left info
@@ -85,10 +86,17 @@ const IS_PREVIEW_ROUTE = IS_EMBED || canvas?.dataset.preview === 'true';
 // feature (no draw mode — see setModelFlowDraw — and nothing read from or
 // written to the other routes' saved arrows, see saveModelFlowPath, which
 // belong to a different model), camera targets (see setCameraTargetSlot),
-// photo/video mode (their key handlers are never wired up), and the hover
+// photo mode (its key handlers are never wired up), and the hover
 // orbit (see updateParallaxTargetFromPointer). battery-preview.html sets
 // this flag too, so all of it applies there as well.
 const IS_BATTERY_ROUTE = IS_EMBED || canvas?.dataset.battery === 'true';
+// index.html's own data-plain="true" (the root route; specto.html is the
+// original full experience without it): the bundled default model starts
+// already at its default view (no opening camera move), and Camera Targets
+// are off — no slots get assigned (see applyParsedModel and
+// setCameraTargetSlot), so the 1-7 keys do nothing, and the panel hides the
+// Camera Targets section.
+const IS_PLAIN_ROUTE = !IS_EMBED && canvas?.dataset.plain === 'true';
 const IS_SIDEWAYS_BATTERY = IS_EMBED ? embedScene.sideways : IS_BATTERY_ROUTE && canvas?.dataset.stacking === 'sideways';
 const BATTERY_COUNT_MIN = IS_SIDEWAYS_BATTERY ? 1 : 3;
 const BATTERY_COUNT_MAX = IS_SIDEWAYS_BATTERY ? 4 : 9;
@@ -194,6 +202,17 @@ if (!storage.getItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY)) {
   storage.removeItem(SLIDER_STORAGE_PREFIX + 'plusFrequency');
   storage.removeItem(SLIDER_STORAGE_PREFIX + 'plusSize');
   storage.setItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY, '1');
+}
+
+// One-time migration: dot frequency default 4 -> 18 and plus frequency
+// default 9 -> 11, retuned after fill patterns started scaling with each
+// model's typical part size (see computePatternScale). Only the two
+// frequencies are cleared — sizes keep whatever the user set.
+const PATTERN_FREQUENCY_DEFAULTS_RESET_MIGRATION_KEY = 'iconMosaic.patternFrequencyDefaultsResetV1';
+if (!storage.getItem(PATTERN_FREQUENCY_DEFAULTS_RESET_MIGRATION_KEY)) {
+  storage.removeItem(SLIDER_STORAGE_PREFIX + 'dotFrequency');
+  storage.removeItem(SLIDER_STORAGE_PREFIX + 'plusFrequency');
+  storage.setItem(PATTERN_FREQUENCY_DEFAULTS_RESET_MIGRATION_KEY, '1');
 }
 
 // One-time cleanup: the model's X/Y/Z position used to persist across
@@ -312,8 +331,8 @@ function setFlowPulseFrequency(value) {
 // (see renderCubeFrame) — 100 (the default) = CUBE_SCALE unchanged, up to
 // 1000 = 10x that.
 const CUBE_SIZE_MIN = 1;
-const CUBE_SIZE_MAX = 1000;
-let cubeSizePercent = restoreNumber('cubeSize', 100);
+const CUBE_SIZE_MAX = 2000;
+let cubeSizePercent = 100; // always starts at 100% on load; never restored from storage
 let cubeSizeScale = cubeSizePercent / 100;
 
 // Shared by setCubeSizePercent (the "Model size" slider) and the scroll-to-
@@ -369,7 +388,7 @@ function setLineFrequency(value) {
 
 const DOT_FREQUENCY_MIN = 1;
 const DOT_FREQUENCY_MAX = 60;
-let dotFrequencyValue = restoreNumber('dotFrequency', 4);
+let dotFrequencyValue = restoreNumber('dotFrequency', 18);
 
 function setDotFrequency(value) {
   const clamped = Math.max(DOT_FREQUENCY_MIN, Math.min(DOT_FREQUENCY_MAX, value));
@@ -393,7 +412,7 @@ function setDotSizePercent(value) {
 
 const PLUS_FREQUENCY_MIN = 1;
 const PLUS_FREQUENCY_MAX = 60;
-let plusFrequencyValue = restoreNumber('plusFrequency', 9);
+let plusFrequencyValue = restoreNumber('plusFrequency', 11);
 
 function setPlusFrequency(value) {
   const clamped = Math.max(PLUS_FREQUENCY_MIN, Math.min(PLUS_FREQUENCY_MAX, value));
@@ -507,14 +526,11 @@ function setLightIntensityPercent(value) {
 // Cube mode's "Blueprint mode" checkbox: dims the model to a flat navy fill
 // and overlays a crease/boundary-edge wireframe in bright cyan, on a navy
 // background — see renderCubeFrame and buildCreaseEdgeLines.
-const BLUEPRINT_STORAGE_KEY = 'iconMosaic.blueprint';
-const storedBlueprint = storage.getItem(BLUEPRINT_STORAGE_KEY);
-let blueprintEnabled = storedBlueprint !== null ? storedBlueprint === 'true' : true;
-
-function setBlueprintEnabled(value) {
-  blueprintEnabled = value;
-  storage.setItem(BLUEPRINT_STORAGE_KEY, String(blueprintEnabled));
-}
+// Always on: the panel's "Hide blueprint shader" toggle was removed, so the
+// shader can no longer be turned off. The old saved preference is cleared
+// so a browser that had it hidden doesn't stay stuck without the shader.
+storage.removeItem('iconMosaic.blueprint');
+const blueprintEnabled = true;
 
 function setShaderTheme(value) {
   shaderTheme = value === 'light' ? 'light' : 'dark';
@@ -693,6 +709,7 @@ const CUBE_FRAGMENT_SHADER = `
   uniform vec3 uHatchLineColor;
   uniform float uLineFrequency;
   uniform float uDotFrequency;
+  uniform float uPatternScale;
   uniform float uDotRadius;
   uniform float uPlusFrequency;
   uniform float uPlusArmHalf;
@@ -709,6 +726,9 @@ const CUBE_FRAGMENT_SHADER = `
   // camera moves) — and so spacing is consistent regardless of which cube
   // face, or which arbitrary custom-model face, is flagged.
   vec2 fillPatternUV(vec3 pos, vec3 normal) {
+    // Keeps pattern density fixed relative to the model (see
+    // customModelPatternScale), undoing any upload size normalization.
+    pos *= uPatternScale;
     vec3 an = abs(normal);
     if (an.x >= an.y && an.x >= an.z) return pos.yz;
     if (an.y >= an.x && an.y >= an.z) return pos.xz;
@@ -1144,6 +1164,7 @@ const uFlowTailFalloffExponent = gl.getUniformLocation(cubeProgram, 'uFlowTailFa
 const uFlowTailVisible = gl.getUniformLocation(cubeProgram, 'uFlowTailVisible');
 const uHatchLineColor = gl.getUniformLocation(cubeProgram, 'uHatchLineColor');
 const uLineFrequency = gl.getUniformLocation(cubeProgram, 'uLineFrequency');
+const uPatternScale = gl.getUniformLocation(cubeProgram, 'uPatternScale');
 const uDotFrequency = gl.getUniformLocation(cubeProgram, 'uDotFrequency');
 const uDotRadius = gl.getUniformLocation(cubeProgram, 'uDotRadius');
 const uPlusFrequency = gl.getUniformLocation(cubeProgram, 'uPlusFrequency');
@@ -1309,6 +1330,7 @@ function resetModelPosition() {
   setModelOffsetXPercent(0);
   setModelOffsetYPercent(0);
   setModelOffsetZPercent(0);
+  notifyModelState(); // so the panel's "Reset position" pill hides again
 }
 
 // Shared by renderCubeFrame and raycastGreenMesh's unprojection so the two
@@ -1365,7 +1387,7 @@ const CUBE_BIRDSEYE_PITCH = Math.PI / 2;
 // The battery routes (IS_BATTERY_ROUTE) start there too: their opening is
 // the stack assembling itself, with the view already still at its resting
 // angle rather than swinging down from above at the same time.
-const STARTS_AT_RESTING_ANGLE = IS_SCROLL_ROUTE || IS_BATTERY_ROUTE;
+const STARTS_AT_RESTING_ANGLE = IS_SCROLL_ROUTE || IS_BATTERY_ROUTE || IS_PLAIN_ROUTE;
 let cubeRotX = STARTS_AT_RESTING_ANGLE ? CUBE_ISO_PITCH : CUBE_BIRDSEYE_PITCH;
 let cubeRotY = STARTS_AT_RESTING_ANGLE ? CUBE_ISO_YAW : CUBE_BIRDSEYE_YAW;
 let cubeDragging = false;
@@ -1669,14 +1691,16 @@ function setHoverMovementPaused(value) {
 // pan — it only fixes the *starting* orientation and freezes hover, so
 // there's nothing to undo on exit.
 let photoMode = false;
+// Count of photo captures handed to the browser so far — exposed via
+// getModelState purely so the panel can show completion feedback.
+let photoCaptureCount = 0;
 
 function setPhotoMode(value) {
   value = !!value;
-  if (value === photoMode || videoRecording || pngSequenceExporting) return;
+  if (value === photoMode) return;
   photoMode = value;
   if (value) {
     resetCubeRotation();
-    if (videoMode) videoMode = false; // mutually exclusive with video mode, see setVideoMode
   }
   notifyModelState(); // drives the panel's bottom-center photo-mode indicator, same as spaceHeld
 }
@@ -1686,7 +1710,7 @@ function setPhotoMode(value) {
 // using whatever they're currently set to (see the photo-mode Enter handler
 // below), rather than Cmd/Ctrl+Enter or Shift+Cmd/Ctrl+Enter being separate
 // one-off variants — one capture trigger, state lives in the panel.
-let photoExport2x = true;
+let photoExport2x = false;
 let photoUniformLineWidth = true;
 
 function setPhotoExport2x(value) {
@@ -1697,43 +1721,6 @@ function setPhotoExport2x(value) {
 function setPhotoUniformLineWidth(value) {
   photoUniformLineWidth = !!value;
   notifyModelState();
-}
-
-// "Video mode": sibling to photo mode above, entered/left with the V key —
-// same orientation-lock/hover-freeze behavior (see updateParallaxTargetFromPointer),
-// but Enter starts a fixed-length recording (see captureVideo), and
-// Cmd/Ctrl+Enter starts a frame-by-frame PNG sequence export instead (see
-// capturePngSequence), instead of an instant still. Mutually exclusive with
-// photo mode (each turns the other off on entry) so Enter is never ambiguous
-// about which capture it triggers.
-let videoMode = false;
-// True only for the duration of an in-progress captureVideo() recording —
-// kept separate from videoMode itself so the mode stays entered (for a
-// retake) once a clip finishes, while a second Enter mid-recording, or a V/P
-// press trying to switch modes mid-capture, is ignored rather than
-// corrupting the in-flight export.
-let videoRecording = false;
-// True only for the duration of an in-progress capturePngSequence() export —
-// a wholly separate flag from videoRecording (rather than reusing it)
-// despite the two exports being mutually exclusive in practice and treated
-// identically by renderLoop/renderCubeFrame, since the panel still needs to
-// tell them apart to show the right indicator text (see getModelState).
-let pngSequenceExporting = false;
-// 0..1, frames completed / total — read by getModelState so the panel can
-// show export progress the way videoRecording's countdown shows elapsed
-// time; unlike that countdown, this can't be derived from wall-clock time on
-// the panel side, since capturePngSequence isn't bound to it.
-let pngSequenceProgress = 0;
-
-function setVideoMode(value) {
-  value = !!value;
-  if (value === videoMode || videoRecording || pngSequenceExporting) return;
-  videoMode = value;
-  if (value) {
-    resetCubeRotation();
-    if (photoMode) photoMode = false; // mutually exclusive with photo mode, see setPhotoMode
-  }
-  notifyModelState(); // drives the panel's bottom-center video-mode indicator, same as photoMode
 }
 
 // "Disable rotation" control: click-and-drag rotation is off by default so
@@ -1798,6 +1785,17 @@ function focusIsOnInteractiveControl() {
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON') return true;
   const role = el.getAttribute && el.getAttribute('role');
   return role === 'switch' || role === 'button';
+}
+
+// Narrower than focusIsOnInteractiveControl: true only where a typed letter
+// is real text input (text-like <input>, <textarea>, contenteditable), not
+// for switches/buttons/sliders/selects that merely hold focus after a click.
+const NON_TEXT_INPUT_TYPES = new Set(['range', 'checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'color', 'image']);
+function focusIsOnTextEntry() {
+  const el = document.activeElement;
+  if (!el) return false;
+  if (el.isContentEditable || el.tagName === 'TEXTAREA') return true;
+  return el.tagName === 'INPUT' && !NON_TEXT_INPUT_TYPES.has(el.type);
 }
 
 // Not wired up on the embedded battery either (IS_BATTERY_EMBED): Space,
@@ -1924,37 +1922,28 @@ window.addEventListener('keydown', (event) => {
   deleteSelectedModelFlowArrow();
 });
 
-// A is a plain toggle (unlike Space/R/Z's hold gestures) for the "Draw flow
-// arrow" mode — press to enter, press again to leave. setModelFlowDraw
-// already handles the enter/leave side effects (resetting position/rotation,
-// dropping an in-progress arrow) and notifies the panel, same as its Switch.
-window.addEventListener('keydown', (event) => {
-  if (event.code !== 'KeyA' || event.repeat) return;
-  if (focusIsOnInteractiveControl()) return;
-  event.preventDefault();
-  setModelFlowDraw(!modelFlowDrawMode);
-});
-
-// The /scroll route (IS_SCROLL_ROUTE) drops photo/video mode entirely, same
+// The /scroll route (IS_SCROLL_ROUTE) drops photo mode entirely, same
 // as it drops the opening camera move (see the flag's own declaration) —
-// none of the P/Escape/Shift+P/V/Enter/Cmd+Enter handlers below are wired up
+// none of the P/Escape/Shift+P/Enter handlers below are wired up
 // there, so those keys are plain no-ops on that route. The /battery route
-// (IS_BATTERY_ROUTE) drops photo/video mode the same way.
+// (IS_BATTERY_ROUTE) drops photo mode the same way.
 if (!IS_SCROLL_ROUTE && !IS_BATTERY_ROUTE) {
-// P enters photo mode (see setPhotoMode/photoMode's own comment) — no
-// longer a toggle: once photoMode is already on, plain P is a no-op rather
-// than exiting, since P and Shift+P (capture, just below) are one keystroke
-// apart and exiting on a mistyped Shift would be an easy way to lose the
-// framing mid-shoot. Esc is the only way out (see the handler below).
-// Excludes Shift so it doesn't also fire alongside Shift+P.
+// P toggles photo mode (see setPhotoMode/photoMode's own comment): enters
+// it, and pressing P again exits — same as Esc (handler below) or the photo
+// card's X. Capture moved to Enter, so the old reason for P being enter-only
+// (a mistyped Shift+P exiting mid-shoot) mostly no longer applies; Shift is
+// still excluded so the legacy Shift+P capture never also toggles.
+// Exiting matches Esc exactly: it works even while a photo-card control
+// (switch, slider, button) has focus — only a real text field still swallows
+// the P. Entering keeps the usual focusIsOnInteractiveControl guard.
 window.addEventListener('keydown', (event) => {
-  if (event.code !== 'KeyP' || event.shiftKey || event.repeat || photoMode) return;
-  if (focusIsOnInteractiveControl()) return;
+  if (event.code !== 'KeyP' || event.shiftKey || event.repeat) return;
+  if (photoMode ? focusIsOnTextEntry() : focusIsOnInteractiveControl()) return;
   event.preventDefault();
-  setPhotoMode(true);
+  setPhotoMode(!photoMode);
 });
 
-// Escape exits photo mode — the only way out now that P only enters (see
+// Escape exits photo mode — alongside P (now a toggle) and the card's X (see
 // the handler above). A no-op outside photo mode so it doesn't fight
 // Escape's other browser/panel uses (e.g. blurring a focused control) when
 // photo mode isn't active.
@@ -1964,7 +1953,9 @@ window.addEventListener('keydown', (event) => {
   setPhotoMode(false);
 });
 
-// Shift+P captures the photo while photo mode is active — a no-op
+// Enter (plain, no modifiers)
+// captures and saves the photo while photo mode is active; Shift+P still
+// works as the older alternate. A no-op
 // otherwise, so it never fights the browser's/panel's own default keyboard
 // behavior. Resolution comes from the panel's current photoExport2x toggle
 // (see the small photo-options card shown while photoMode is active) rather
@@ -1974,44 +1965,15 @@ window.addEventListener('keydown', (event) => {
 // photoUniformLineWidth live, so the capture just gets whatever the preview
 // was already showing.
 window.addEventListener('keydown', (event) => {
-  if (event.code !== 'KeyP' || !event.shiftKey || !photoMode || event.repeat) return;
+  const isPlainEnter = event.code === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey;
+  const isShiftP = event.code === 'KeyP' && event.shiftKey;
+  if (!(isPlainEnter || isShiftP) || !photoMode || event.repeat) return;
   if (focusIsOnInteractiveControl()) return;
   event.preventDefault();
   capturePhoto(photoExport2x ? PHOTO_EXPORT_MAX_DIMENSION_2X : PHOTO_EXPORT_MAX_DIMENSION);
 });
 
-// V is the same kind of plain toggle as P above, for video mode (see
-// setVideoMode/videoMode's own comment).
-window.addEventListener('keydown', (event) => {
-  if (event.code !== 'KeyV' || event.repeat) return;
-  if (focusIsOnInteractiveControl()) return;
-  event.preventDefault();
-  setVideoMode(!videoMode);
-});
-
-// Enter starts a recording (see VIDEO_EXPORT_DURATION_MS) while video mode
-// is active and no capture is already running — mirrors the photo-mode
-// Enter handler above; a second Enter mid-recording, or a plain Enter while
-// a PNG sequence export is running, is a no-op via the videoRecording/
-// pngSequenceExporting checks. Excludes Cmd/Ctrl+Enter (see the next
-// handler) so a single keypress can't fire both at once.
-window.addEventListener('keydown', (event) => {
-  if (event.code !== 'Enter' || !videoMode || videoRecording || pngSequenceExporting || event.metaKey || event.ctrlKey || event.repeat) return;
-  if (focusIsOnInteractiveControl()) return;
-  event.preventDefault();
-  captureVideo();
-});
-
-// Cmd+Enter (Ctrl+Enter off Mac, same convention KeyZ's undo shortcut above
-// uses) starts a PNG-sequence export instead of a real-time recording — see
-// capturePngSequence's own comment for why you'd want this over plain Enter.
-window.addEventListener('keydown', (event) => {
-  if (event.code !== 'Enter' || !(event.metaKey || event.ctrlKey) || !videoMode || videoRecording || pngSequenceExporting || event.repeat) return;
-  if (focusIsOnInteractiveControl()) return;
-  event.preventDefault();
-  capturePngSequence();
-});
-} // end if (!IS_SCROLL_ROUTE && !IS_BATTERY_ROUTE) — photo/video mode
+} // end if (!IS_SCROLL_ROUTE && !IS_BATTERY_ROUTE) — photo mode
 
 // 1-7 jump straight to Camera Target 1-7 (see goToCameraTarget), same
 // shortcut as each target's own "Go" button in the panel. Ignored while
@@ -2272,13 +2234,13 @@ function updateParallaxTargetFromPointer(event) {
   // do — see setEditingDefaultView: while parking the free camera for the
   // baked-in default, ambient tilt drifting the view around while the user
   // is trying to pan/zoom precisely would fight the exact composition
-  // they're lining up. photoMode/videoMode lock it too, so the orientation
-  // stays at the fixed default isometric angle setPhotoMode/setVideoMode
-  // snapped to — see their own comments.
+  // they're lining up. photoMode locks it too, so the orientation
+  // stays at the fixed default isometric angle setPhotoMode snapped to —
+  // see its own comment.
   // No hover orbit at all on /battery and /battery-preview: the target never
   // leaves 0, so the tilt it eases toward stays flat.
   if (IS_BATTERY_ROUTE) return;
-  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld || rKeyHeld || zKeyHeld || editingDefaultView || photoMode || videoMode) return;
+  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld || rKeyHeld || zKeyHeld || editingDefaultView || photoMode) return;
   const nx = Math.max(-1, Math.min(1, (event.clientX / window.innerWidth) * 2 - 1));
   const ny = Math.max(-1, Math.min(1, (event.clientY / window.innerHeight) * 2 - 1));
   cubeParallaxTargetY = nx * CUBE_PARALLAX_MAX_RAD;
@@ -2314,38 +2276,6 @@ function advanceParallax() {
     cubeParallaxX += (cubeParallaxTargetX - cubeParallaxX) * CUBE_PARALLAX_SMOOTHING;
     cubeParallaxY += (cubeParallaxTargetY - cubeParallaxY) * CUBE_PARALLAX_SMOOTHING;
   }
-}
-
-// Simulated circling-cursor path driving cubeParallaxX/Y during a video or
-// PNG-sequence capture (see videoRecording/captureVideo and
-// pngSequenceExporting/capturePngSequence) — traces exactly one full loop
-// over the caller-supplied t (0..1), so a clip covering the full range lands
-// its last frame back on its first (sin/cos at t=1 loop back to their t=0
-// values) rather than leaving a visible pop if it's ever played back
-// looping. Reuses the same nx/ny -> parallaxTarget mapping
-// updateParallaxTargetFromPointer uses for real cursor input (see
-// CUBE_PARALLAX_MAX_RAD), just parameterized by progress through the loop
-// instead of pointer position, and written straight into cubeParallaxX/Y
-// rather than through advanceParallax's spring smoothing — a lagged
-// approximation of the path wouldn't necessarily land exactly back where it
-// started. Both captureVideo and capturePngSequence derive t from frame
-// index / total frame count (see their own comments on why neither is bound
-// to wall-clock time) — they just disagree on whether the last frame reaches
-// t=1 exactly, per their own comments on that.
-//
-// An ellipse, not a circle: VIDEO_TILT_VERTICAL_FACTOR scales pitch (up/down
-// tilt) down relative to yaw (left/right tilt, still the full
-// CUBE_PARALLAX_MAX_RAD), since a full-amplitude vertical swing read as more
-// motion than wanted here — tune this one constant to adjust how flat the
-// loop is.
-const VIDEO_TILT_VERTICAL_FACTOR = 0.5;
-
-function advanceVideoTilt(t) {
-  const angle = t * Math.PI * 2;
-  cubeParallaxTargetX = Math.sin(angle) * CUBE_PARALLAX_MAX_RAD * VIDEO_TILT_VERTICAL_FACTOR;
-  cubeParallaxTargetY = Math.cos(angle) * CUBE_PARALLAX_MAX_RAD;
-  cubeParallaxX = cubeParallaxTargetX;
-  cubeParallaxY = cubeParallaxTargetY;
 }
 
 // Fires without requiring movement whenever the cursor actually crosses
@@ -2789,6 +2719,27 @@ const modelStateListeners = [];
 // branch, which is the one place that iterates the slots as a sequence
 // rather than jumping to one by its own fixed index.
 const CAMERA_TARGET_SLOT_COUNT = 7;
+// Multiplies object-space positions before the fill-pattern lookup (see
+// fillPatternUV), so pattern density is tied to the size of a model's
+// typical *part* rather than the whole model. Normalizing to the whole
+// model made a big scene of many small buildings need ~10x the frequency of
+// a single house for the same look (its parts end up tiny after whole-model
+// normalization). The typical part size is the 75th percentile of the
+// objects' bounding-box diagonals — robust to tiny bolts/markers and to a
+// few huge ground planes. PATTERN_REFERENCE_PART_SIZE is calibrated so a
+// frequency of 20 matches what "for_home.obj" showed at 2 and
+// "0-Final scene.obj" at 20 under the old whole-model rule. Scale-invariant
+// (positions and object sizes scale together), so it also cancels any
+// upload size normalization (rescaleParsedModel).
+const PATTERN_REFERENCE_PART_SIZE = 0.39;
+let customModelPatternScale = 1;
+
+function computePatternScale(parsed) {
+  const sizes = parsed.objects.map((object) => object.size).filter((size) => size > 1e-6).sort((a, b) => a - b);
+  if (sizes.length === 0) return parsed.patternScale ?? 1;
+  const typicalPartSize = sizes[Math.min(sizes.length - 1, Math.floor(sizes.length * 0.75))];
+  return PATTERN_REFERENCE_PART_SIZE / typicalPartSize;
+}
 let customModelObjects = []; // [{name, center:[x,y,z], size:number, bounds:{minX,maxX,minY,maxY,minZ,maxZ}}], from parseObj
 /** @type {(string | null)[]} */
 let cameraTargetSlots = Array(CAMERA_TARGET_SLOT_COUNT).fill(null);
@@ -2818,17 +2769,9 @@ let introCameraTargetTimer = null;
 // whatever was last edited.
 let defaultCameraView = null; // { offsetX, offsetY, offsetZ, sizePercent } | null
 
-// Ships with the app so a fresh load lands on a deliberately composed
-// default view instead of the plain centered/100% whole-scene one — same
-// "hand-set once, then baked into source" idea as DEFAULT_MODEL_FLOW_PATH_DATA
-// above, captured via `copy(localStorage.getItem('iconMosaic.defaultCameraView'))`
-// in the console after using "Edit default position" back when this was
-// still localStorage-persisted. sizePercent is 8x its originally-captured
-// value (offsetX/Y/Z are pan percentages of the scale-independent
-// MODEL_POSITION_RANGE, so those didn't need adjusting) — compensates for
-// loadBundledDefaultModel dropping its own former 8x parseObj multiplier,
-// so the on-screen framing this produces is unchanged.
-const BAKED_DEFAULT_CAMERA_VIEW = { offsetX: -5.17360464543138, offsetY: 0, offsetZ: 20.631551421416827, sizePercent: 138.76653352869642 };
+// What a fresh load lands on: the plain centered (0,0,0) view at 100%,
+// which is also what the Reset position / Reset zoom pills return to.
+const BAKED_DEFAULT_CAMERA_VIEW = { offsetX: 0, offsetY: 0, offsetZ: 0, sizePercent: 100 };
 
 // Applies a saved view's pan+zoom (never rotation — see the comment above
 // defaultCameraView's declaration). Shared by goToDefaultCameraView,
@@ -2927,8 +2870,30 @@ let showTargetMaterials = false;
 // and the pivot orb/floor guide it gates are presenter-facing dev aids that
 // should never appear on the production hero build.
 let panelsHidden = IS_HERO;
+// The top-center FPS monitor (#perf-monitor) and bottom-right axis gizmo
+// (#axis-gizmo) follow the panels' visibility too — they're presenter
+// chrome just like them. Toggles .is-panels-hidden, which animates with the
+// panels' own .t-panel tokens (see #perf-monitor/#axis-gizmo in
+// src/index.css). The first call (panel.tsx's mount effect) snaps instead
+// of animating, so a page that loads with panels hidden doesn't flash them
+// fading out.
+const panelChromeEls = ['perf-monitor', 'axis-gizmo']
+  .map((id) => document.getElementById(id))
+  .filter(Boolean);
+let panelChromeSynced = false;
 function setPanelsHidden(hidden) {
   panelsHidden = !!hidden;
+  for (const el of panelChromeEls) {
+    if (!panelChromeSynced) {
+      el.style.transition = 'none';
+      el.classList.toggle('is-panels-hidden', panelsHidden);
+      void el.offsetWidth; // commit the snapped state before restoring transitions
+      el.style.transition = '';
+    } else {
+      el.classList.toggle('is-panels-hidden', panelsHidden);
+    }
+  }
+  panelChromeSynced = true;
 }
 // Extra scale multiplier applied on top of cubeSizeScale while a camera
 // target is active (see renderCubeFrame) — springs to 1x whenever no target
@@ -3044,13 +3009,9 @@ function getModelState() {
   return {
     spaceHeld,
     photoMode,
+    photoCaptureCount,
     photoExport2x,
     photoUniformLineWidth,
-    videoMode,
-    videoRecording,
-    videoExportDurationMs: VIDEO_EXPORT_DURATION_MS,
-    pngSequenceExporting,
-    pngSequenceProgress,
     rotationDisabled,
     // Included so schedulePanSync/flushPanSync's notifyModelState() (fired
     // continuously while Space-dragging) keeps the "Model X/Y position"
@@ -3058,6 +3019,9 @@ function getModelState() {
     // (getInitialState reads these too, but that's only read once on mount).
     modelOffsetX: modelOffsetXPercent,
     modelOffsetY: modelOffsetYPercent,
+    // Height (Z-drag) — not a slider, but counts toward "model moved off its
+    // default position" for the bottom-center "Reset position" pill.
+    modelOffsetZ: modelOffsetZPercent,
     customModelReady,
     cubeSize: cubeSizePercent,
     cubeModelStatus,
@@ -3105,7 +3069,7 @@ function getModelState() {
 function setCameraTargetSlot(slotIndex, objectName) {
   // No camera targets on /battery: with no slot ever assigned, the Digit
   // keys and goToCameraTarget have nothing to go to.
-  if (IS_BATTERY_ROUTE) return;
+  if (IS_BATTERY_ROUTE || IS_PLAIN_ROUTE) return;
   cameraTargetSlots = cameraTargetSlots.map((v, i) => (i === slotIndex ? objectName || null : v));
   if (cameraTargetActiveIndex === slotIndex && !objectName) {
     cameraTargetActiveIndex = null;
@@ -3637,6 +3601,7 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = []) {
   // actually passed (loadBundledDefaultModel currently seeds only 3 of the
   // 7) — the rest just stay null (empty) until assigned by hand.
   customModelObjects = parsed.objects;
+  customModelPatternScale = computePatternScale(parsed);
   cameraTargetSlots = Array.from(
     { length: CAMERA_TARGET_SLOT_COUNT },
     (_, i) => defaultCameraTargets[i] ?? null,
@@ -3647,7 +3612,7 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = []) {
   // defaultCameraTargets for the same slot — the model's own naming is a
   // more explicit signal than a generic bundled-model seed.
   const TARGET_NAME_RE = /^target_(\d+)$/i;
-  for (const obj of parsed.objects) {
+  for (const obj of IS_PLAIN_ROUTE ? [] : parsed.objects) {
     const match = TARGET_NAME_RE.exec(obj.name);
     if (!match) continue;
     const slotIndex = Number(match[1]) - 1;
@@ -3688,8 +3653,8 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = []) {
   setCubeSizePercent(100); // a freshly loaded model starts at the default size, not whatever the slider was left at
   const triCount = customModelVertexCount / 3;
   cubeModelStatus = parsed.hasMaterials
-    ? `${objName} (${triCount} tris, colors from ${mtlName})`
-    : `${objName} (${triCount} tris, no materials found)`;
+    ? `${objName} (${triCount.toLocaleString("en-US")} tris, colors from ${mtlName})`
+    : `${objName} (${triCount.toLocaleString("en-US")} tris, no materials found)`;
   batteryFrame = null;
   if (batteryStack) {
     // Frame this newly added asset without changing the default scene or camera.
@@ -3731,6 +3696,62 @@ function frameBatteryModel() {
   modelOffsetZPercent = -center[2] * scale / MODEL_POSITION_RANGE * 100;
 }
 
+// Upload size normalization. parseObj already scales every model so its
+// longest axis is the same length, but that alone still lets a long, flat
+// model read far smaller on screen than a compact one. So an uploaded model
+// is additionally scaled so its silhouette — seen through the same fixed
+// isometric angle every model rests at (CUBE_ISO_YAW/PITCH, as
+// computeCameraTargetGoalForObject uses) — fills UPLOAD_FIT_FILL of the
+// current viewport on whichever axis is tighter, at Model size 100%.
+// applyParsedModel then sets the slider to 100%, so "100%" always means
+// "this normalized size". Uniform scaling about the model's origin (its
+// floor center), so every position-derived field scales by the same factor
+// and nothing needs re-parsing.
+const UPLOAD_FIT_FILL = 0.6;
+
+function computeUploadFitScale(positions) {
+  const cy = Math.cos(CUBE_ISO_YAW), sy = Math.sin(CUBE_ISO_YAW);
+  const cx = Math.cos(CUBE_ISO_PITCH), sx = Math.sin(CUBE_ISO_PITCH);
+  let minPX = Infinity, maxPX = -Infinity, minPY = Infinity, maxPY = -Infinity;
+  for (let i = 0; i < positions.length; i += 3) {
+    const x = positions[i], y = positions[i + 1], z = positions[i + 2];
+    // rotateYVec3 then rotateXVec3, inlined (no per-vertex allocation).
+    const px = x * cy + z * sy;
+    const rz = -x * sy + z * cy;
+    const py = y * cx - rz * sx;
+    if (px < minPX) minPX = px; if (px > maxPX) maxPX = px;
+    if (py < minPY) minPY = py; if (py > maxPY) maxPY = py;
+  }
+  const projW = maxPX - minPX, projH = maxPY - minPY;
+  if (!(projW > 1e-6) && !(projH > 1e-6)) return 1;
+  const fitW = projW > 1e-6 ? (UPLOAD_FIT_FILL * 2 * cubeProjectionHalfX) / (projW * CUBE_SCALE) : Infinity;
+  const fitH = projH > 1e-6 ? (UPLOAD_FIT_FILL * 2 * cubeProjectionHalfY) / (projH * CUBE_SCALE) : Infinity;
+  return Math.min(fitW, fitH);
+}
+
+function rescaleParsedModel(parsed, factor) {
+  if (!(factor > 0) || factor === 1) return;
+  // The shader's fill patterns are spaced per object-space unit; record the
+  // inverse so they keep the same repeats-per-model as an un-rescaled model
+  // (see customModelPatternScale / uPatternScale).
+  parsed.patternScale = (parsed.patternScale ?? 1) / factor;
+  for (const key of ['positions', 'targetPositions', 'targetLinePositions', 'linePositions']) {
+    const arr = parsed[key];
+    if (!arr) continue;
+    for (let i = 0; i < arr.length; i++) arr[i] *= factor;
+  }
+  for (const object of parsed.objects) {
+    object.center = object.center.map((v) => v * factor);
+    object.size *= factor;
+    const b = object.bounds;
+    object.bounds = {
+      minX: b.minX * factor, maxX: b.maxX * factor,
+      minY: b.minY * factor, maxY: b.maxY * factor,
+      minZ: b.minZ * factor, maxZ: b.maxZ * factor,
+    };
+  }
+}
+
 // Shared by the file-picker input and drag-and-drop below: given a loose
 // list of Files (as either produces), finds the .obj and its .mtl sidecar,
 // parses, and uploads, replacing whatever model (bundled default or a
@@ -3754,7 +3775,14 @@ async function loadModelFromFiles(files) {
     if (mtlFile) materials = parseMtl(await readFileText(mtlFile));
 
     const parsed = parseObj(objText, materials);
+    // Normalize first (see computeUploadFitScale), then applyParsedModel
+    // sets Model size to 100% — so 100% is this normalized size.
+    if (parsed) rescaleParsedModel(parsed, computeUploadFitScale(parsed.positions));
     applyParsedModel(parsed, objFile.name, mtlFile && mtlFile.name);
+    // A dragged-in model starts centered (0,0,0) at 100%, like a fresh load.
+    // applyParsedModel already sets 100%; this drops any leftover pan. The
+    // battery routes frame the drop themselves (frameBatteryModel), so skip.
+    if (!batteryStack) resetModelPosition();
     clearModelFlowPath(); // a newly loaded model invalidates any previously drawn arrow
   } catch (err) {
     console.error(err);
@@ -3855,11 +3883,6 @@ async function loadBundledDefaultModel() {
     // (see loadModelFromFiles's own parseObj call) — no extra multiplier —
     // so the bundled default model isn't a different absolute physical size
     // than the same file would be if the user dragged it in themselves.
-    // BAKED_DEFAULT_CAMERA_VIEW's sizePercent below is scaled up 8x to
-    // compensate and keep the same on-screen framing this used to produce
-    // at the old 8x-larger object-space scale; Camera Targets need no such
-    // compensation since their own "frame to fit" zoom is computed fresh
-    // from the model's actual (now 1x) bounds every time.
     const parsed = parseObj(objText, materials);
     // No defaultCameraTargets array needed here — this model already names
     // its own marker objects Target_1/Target_2/Target_3/Target_4 (each on
@@ -3941,7 +3964,7 @@ async function loadBundledDefaultModel() {
     // pan/zoom above is already instant, and there's no push into Camera
     // Target 1: the model just sits at rest, with only live hover-parallax
     // tilt on top.
-    if (!IS_SCROLL_ROUTE) {
+    if (!IS_SCROLL_ROUTE && !IS_PLAIN_ROUTE) {
     // Yaw itself is handed off entirely to startIntroYawTween below (see
     // its own comment) — passing this call's own current cubeRotY (just set
     // by startIntroYawTween, immediately above) as its yaw target makes this
@@ -3984,7 +4007,7 @@ async function loadBundledDefaultModel() {
       ),
       MODEL_LOAD_PHASE2_START_MS,
     );
-    } // end if (!IS_SCROLL_ROUTE) — opening camera move
+    } // end if (!IS_SCROLL_ROUTE && !IS_PLAIN_ROUTE) — opening camera move
     // Hero never restores a locally-drawn arrow from localStorage — every
     // visitor is effectively a fresh session, so it always plays the baked
     // default flow path. IS_HERO short-circuits before restoreModelFlowPath()
@@ -5522,15 +5545,7 @@ function renderCubeFrame() {
   }
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-  if (videoRecording || pngSequenceExporting) {
-    // Deliberately does nothing: both captureVideo() and capturePngSequence()
-    // call advanceVideoTilt themselves, with their own frame-index-based t,
-    // immediately before calling renderCubeFrame() for each frame — and
-    // renderLoop pauses itself for the whole export either way (see its own
-    // check), so this branch only exists to make sure nothing here (ambient
-    // hover, a leftover rotation-reset tween) can clobber cubeParallaxX/Y in
-    // between frames.
-  } else if (cubeRotResetStartTime !== null) {
+  if (cubeRotResetStartTime !== null) {
     // Fast ease-out cubic from the snapshot taken in tweenCubeRotationTo to
     // its target angle — cubeRotResetSuppressParallax additionally decays
     // the tilt itself back to zero over the same curve (overriding the
@@ -5834,6 +5849,7 @@ function renderCubeFrame() {
   const blueprintLineColor = BLUEPRINT_THEMES[shaderTheme].line;
   gl.uniform3f(uHatchLineColor, blueprintLineColor[0], blueprintLineColor[1], blueprintLineColor[2]);
   gl.uniform1f(uLineFrequency, lineFrequencyValue);
+  gl.uniform1f(uPatternScale, customModelPatternScale);
   gl.uniform1f(uDotFrequency, dotFrequencyValue);
   gl.uniform1f(uDotRadius, dotSizePercent / 100);
   gl.uniform1f(uPlusFrequency, plusFrequencyValue);
@@ -6307,10 +6323,10 @@ function renderCubeFrame() {
     // pivot), or the active camera target's centroid when one's selected,
     // since that's what camera-target mode locks to screen-center instead.
     // Skipped outright on the preview routes, while the panels are hidden
-    // (see panelsHidden) or while photo/video mode is active — a
+    // (see panelsHidden) or while photo mode is active — a
     // presenter-facing dev aid, not something that belongs in an embedded
-    // preview, an otherwise clean shot or a captured photo/video.
-    if (!IS_PREVIEW_ROUTE && !panelsHidden && !photoMode && !videoMode) {
+    // preview, an otherwise clean shot or a captured photo.
+    if (!IS_PREVIEW_ROUTE && !panelsHidden && !photoMode) {
       const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
       const pivotObj = activeTargetName ? cameraTargetCurrent : [-panX / s, -panY / s, -panZ / s];
       gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
@@ -6380,11 +6396,9 @@ function applyCanvasSize() {
 // current viewport's own aspect ratio (window.innerWidth/innerHeight), so
 // every export frames identically to whatever's on screen, just at a fixed
 // resolution instead of whatever DPR/renderScale the live canvas happens to
-// be running at. Shared by capturePhoto/captureVideo/capturePngSequence.
-// Rounds to the nearest even integer — video codecs (AVC/HEVC, via WebCodecs)
-// reject odd frame dimensions outright, and every other export path is
-// indifferent to being off by at most 1px, so it's applied unconditionally
-// rather than only for captureVideo.
+// be running at. Used by capturePhoto. Rounds to the nearest even integer
+// (kept from the removed video export, whose codecs rejected odd sizes —
+// harmless for a PNG, and it keeps existing export sizes unchanged).
 function roundToEven(n) {
   return 2 * Math.round(n / 2);
 }
@@ -6421,7 +6435,7 @@ let capturingTransparentPhoto = false;
 // photoUniformLineWidth is on.
 const PHOTO_LINE_WIDTH_HALF_PX_MIN = 0.5;
 const PHOTO_LINE_WIDTH_HALF_PX_MAX = 5;
-let photoLineWidthHalfPx = restoreNumber('photoLineWidthHalfPx', 1.5);
+let photoLineWidthHalfPx = restoreNumber('photoLineWidthHalfPx', 1);
 
 function setPhotoLineWidthHalfPx(value) {
   photoLineWidthHalfPx = value;
@@ -6464,6 +6478,8 @@ function capturePhoto(maxDimension = PHOTO_EXPORT_MAX_DIMENSION) {
     link.download = `bluprint-model-${Date.now()}.png`;
     link.click();
     URL.revokeObjectURL(url);
+    photoCaptureCount++; // the panel's Capture button flashes "Saved" on change
+    notifyModelState();
   }, 'image/png');
 
   // Back to the live resolution immediately, so nothing looks broken on the
@@ -6473,303 +6489,7 @@ function capturePhoto(maxDimension = PHOTO_EXPORT_MAX_DIMENSION) {
   renderCubeFrame();
 }
 
-// Video mode export (see videoMode/captureVideo): fixed clip length,
-// resolution, and frame rate for every capture. Kept as its own constants
-// rather than reusing PNG_SEQUENCE_MAX_DIMENSION (below) so the two can be
-// tuned independently — neither export's *performance* depends on this
-// resolution anymore (see captureVideo's own comment), so this is just a
-// quality choice.
-// Fixed UHD 4K 16:9, unlike capturePhoto/capturePngSequence which match
-// whatever aspect ratio the current window happens to be — a deliverable
-// video benefits from a standard, predictable frame size more than it does
-// from matching the live viewport.
-const VIDEO_EXPORT_WIDTH = 3840;
-const VIDEO_EXPORT_HEIGHT = 2160;
-// The tilt loop (see advanceVideoTilt) always takes exactly this long, so
-// this is also what sets its angular speed — raising it both lengthens the
-// clip and slows the circling motion down, same lever for both. Shared by
-// capturePngSequence too, for the same loop-length/frame-count math, even
-// though neither export is actually bound to wall-clock time (see
-// captureVideo's own comment).
-const VIDEO_EXPORT_DURATION_MS = 10000;
-const VIDEO_EXPORT_FPS = 60;
-// ~64 Mbps — scaled up from the ~16 Mbps that was right for 1080p60 to match
-// 4K60's 4x pixel count, so per-frame quality doesn't come out softer just
-// because the frame is bigger.
-const VIDEO_EXPORT_BITS_PER_SECOND = 64_000_000;
-
-// True only while a captureVideo() or capturePngSequence() export is in
-// flight. Checked by resize() so a mid-export window resize can't shift
-// cubeProjectionHalfX/Y (and so the framing), or clobber the fixed
-// canvas.width/height either export forces for its duration.
-let videoExportInProgress = false;
-
-// Encodes directly to a real MP4 via WebCodecs (through Mediabunny — see the
-// import at the top of this file) instead of MediaRecorder+captureStream.
-// The original real-time version of this function recorded a live
-// captureStream while the ambient render loop kept running — which meant
-// racing a hard ~16.7ms/frame deadline against however long rendering,
-// scaling, and hardware-encoding a frame actually took, and silently
-// repeating a stale frame (audible/visible stutter) whenever it lost that
-// race. Rendering itself is no longer the bottleneck that made it lose (see
-// git history — captureVideo used to blit a cheap live-res frame up to
-// export resolution for exactly that reason), but a *guarantee* of zero
-// dropped/duplicated frames can't come from a real-time pipeline at all, no
-// matter how fast each piece is — there's always some slow machine/frame
-// that blows the deadline.
-//
-// This version sidesteps the deadline entirely, the same way
-// capturePngSequence already does: step through frames one at a time with an
-// explicit, evenly-spaced timestamp (i / VIDEO_EXPORT_FPS seconds) instead of
-// a real-clock one, rendering each directly onto the live WebGL canvas at
-// full export resolution and handing it to Mediabunny's CanvasSource, which
-// wraps WebCodecs' VideoEncoder. Its default latencyMode ('quality', not
-// 'realtime') is documented to never drop a frame — encoding just takes as
-// long as it takes per frame, with no deadline riding on it. A slow machine
-// makes the export take longer in wall-clock time; it can no longer make the
-// output choppier.
-async function captureVideo() {
-  if (videoRecording || pngSequenceExporting) return;
-  // Claimed synchronously, before the async codec detection below — codec
-  // detection awaits a promise, and without this a rapid second Enter press
-  // during that gap would sail past the guard above (still false at that
-  // point) and start a second, concurrent export fighting this one over the
-  // same canvas.
-  videoRecording = true;
-
-  const width = VIDEO_EXPORT_WIDTH;
-  const height = VIDEO_EXPORT_HEIGHT;
-  // In preference order: H.264 first, since it's the format most readily
-  // droppable straight into a deck/editor without transcoding; VP9/AV1 as
-  // fallbacks for browsers that can't encode it. All three are valid inside
-  // Mp4OutputFormat.
-  //
-  // AVC is checked twice: once with hardwareAcceleration forced, because
-  // without that hint WebCodecs can silently pick a software AVC encoder
-  // that caps out well below this function's ~4K export size (Level 4.1,
-  // ~1920x1088) and report "can't encode avc" — which used to fall through
-  // to VP9, a codec Premiere Pro/Media Encoder can't open even inside an mp4
-  // container. But forcing hardwareAcceleration on *every* codec in one call
-  // is wrong: most GPUs expose hardware AVC encode but not hardware VP9/AV1,
-  // so that would make the whole lookup fail (and this function silently
-  // bail) on any machine whose only hardware encoder is AVC. So: try AVC
-  // hardware-only first, then fall back to the original unconstrained
-  // detection across all three if that didn't pan out.
-  let codec = await getFirstEncodableVideoCodec(['avc'], {
-    width,
-    height,
-    hardwareAcceleration: 'prefer-hardware',
-  });
-  const hardwareAvc = codec === 'avc';
-  if (!codec) {
-    codec = await getFirstEncodableVideoCodec(['avc', 'vp9', 'av1'], { width, height });
-  }
-  if (!codec) {
-    videoRecording = false;
-    return;
-  }
-
-  canvas.width = width;
-  canvas.height = height;
-  // Unlike capturePhoto/capturePngSequence (which keep the live window's own
-  // aspect ratio, so cubeProjectionHalfX/Y already match), this export's
-  // fixed 16:9 frame generally doesn't match the window — recompute the
-  // projection for it here, and back to the window's own aspect in the
-  // resize() call during cleanup below.
-  updateCubeProjection(width / height);
-  videoExportInProgress = true;
-  cubeRotResetStartTime = null; // hand cubeParallaxX/Y to this function's own advanceVideoTilt calls below
-  notifyModelState(); // drives the panel's video-mode indicator into its "Recording…" text
-
-  const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
-  const videoSource = new CanvasSource(canvas, {
-    codec,
-    quality: new Quality({ bitrate: VIDEO_EXPORT_BITS_PER_SECOND }),
-    ...(hardwareAvc ? { hardwareAcceleration: 'prefer-hardware' } : {}),
-  });
-  output.addVideoTrack(videoSource);
-  await output.start();
-
-  // Deliberately i < totalFrames, never reaching t=1 — that would duplicate
-  // t=0's frame, which is what a *player* looping this file back-to-back
-  // already does implicitly; an explicit duplicate would just show up as a
-  // held/stuttered frame at the seam. (capturePngSequence, exporting loose
-  // files rather than a file a player loops for you, deliberately makes the
-  // opposite choice — see its own comment.)
-  const totalFrames = Math.round((VIDEO_EXPORT_DURATION_MS / 1000) * VIDEO_EXPORT_FPS);
-  const frameDuration = 1 / VIDEO_EXPORT_FPS;
-  for (let i = 0; i < totalFrames; i++) {
-    advanceVideoTilt(i / totalFrames);
-    renderCubeFrame();
-    await videoSource.add(i * frameDuration, frameDuration);
-  }
-  videoSource.close();
-  await output.finalize();
-
-  videoExportInProgress = false;
-  videoRecording = false;
-  // Same reasoning as capturePngSequence's own cleanup: ease back to the
-  // neutral framed angle now that advanceVideoTilt no longer owns
-  // cubeParallaxX/Y, so a retake starts clean.
-  resetCubeRotation();
-  // videoExportInProgress is already false at this point, so this runs its
-  // full body — restoring canvas size *and* cubeProjectionHalfX/Y to the
-  // live window's own aspect, undoing the fixed 16:9 projection set above.
-  resize();
-  renderCubeFrame();
-
-  const url = URL.createObjectURL(new Blob([output.target.buffer], { type: 'video/mp4' }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `bluprint-model-${Date.now()}.mp4`;
-  link.click();
-  URL.revokeObjectURL(url);
-
-  notifyModelState();
-}
-
-// --- PNG sequence export ----------------------------------------------
-//
-// Cmd/Ctrl+Enter while video mode is active (see the keydown handler above)
-// — an alternative to captureVideo() for manually assembling the clip
-// yourself (ffmpeg, an NLE, whatever) instead of getting a ready-made MP4.
-// Same frame-by-frame, non-real-time approach captureVideo now uses (see its
-// own comment) — renders, captures, and packs one frame at a time, awaiting
-// each PNG encode before starting the next — just producing loose files
-// instead of a muxed video.
-
-// Its own constant rather than reusing VIDEO_EXPORT_WIDTH/HEIGHT so the two
-// stay independently tunable — this one still follows the window's own
-// aspect ratio (see computeExportDimensions), unlike the fixed-16:9 video
-// export.
-const PNG_SEQUENCE_MAX_DIMENSION = 3840; // UHD 4K, long edge
-
-// CRC-32 (the zlib/PNG/ZIP polynomial) — the one piece of real "format" math
-// a ZIP entry needs; everything else below is just byte layout.
-function crc32(bytes) {
-  let crc = 0xffffffff;
-  for (let i = 0; i < bytes.length; i++) {
-    crc ^= bytes[i];
-    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-async function capturePngSequence() {
-  if (videoRecording || pngSequenceExporting) return;
-
-  const { width, height } = computeExportDimensions(PNG_SEQUENCE_MAX_DIMENSION);
-  canvas.width = width;
-  canvas.height = height;
-
-  pngSequenceExporting = true;
-  pngSequenceProgress = 0;
-  videoExportInProgress = true; // freezes resize(), same protection a captureVideo() recording gets
-  cubeRotResetStartTime = null; // hand cubeParallaxX/Y to this function's own advanceVideoTilt calls below
-  notifyModelState(); // drives the panel's video-mode indicator into its "Exporting…" text
-
-  const loopFrames = Math.round((VIDEO_EXPORT_DURATION_MS / 1000) * VIDEO_EXPORT_FPS);
-  // One extra frame beyond a full loop's worth (loopFrames), so the sequence
-  // explicitly closes on itself: frame 0's t=0 and frame loopFrames's t=1
-  // land on the exact same point on the circle (cos/sin are periodic), so
-  // the first and last files in the sequence share the same tilt position —
-  // useful for confirming the loop closes cleanly, or for tooling that
-  // expects an explicit closing frame rather than inferring the wrap.
-  const totalFrames = loopFrames + 1;
-  const parts = []; // local file header + name + data, per frame, in file order — fed straight into the final Blob
-  const centralDirectory = []; // { nameBytes, crc, size, offset } per frame, for the trailer written after the loop
-  let offset = 0;
-
-  for (let i = 0; i < totalFrames; i++) {
-    advanceVideoTilt(i / loopFrames);
-    renderCubeFrame();
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    const nameBytes = new TextEncoder().encode(`frame-${String(i).padStart(4, '0')}.png`);
-    const crc = crc32(bytes);
-
-    const local = new DataView(new ArrayBuffer(30));
-    local.setUint32(0, 0x04034b50, true); // local file header signature
-    local.setUint16(4, 20, true); // version needed to extract
-    local.setUint16(6, 0, true); // general purpose bit flag
-    local.setUint16(8, 0, true); // compression method: 0 = store
-    local.setUint16(10, 0, true); // last mod file time — not meaningful for a synthetic export, left zeroed
-    local.setUint16(12, 0, true); // last mod file date
-    local.setUint32(14, crc, true);
-    local.setUint32(18, bytes.length, true); // compressed size == uncompressed size, store method
-    local.setUint32(22, bytes.length, true);
-    local.setUint16(26, nameBytes.length, true);
-    local.setUint16(28, 0, true); // extra field length
-    parts.push(new Uint8Array(local.buffer), nameBytes, bytes);
-    centralDirectory.push({ nameBytes, crc, size: bytes.length, offset });
-    offset += 30 + nameBytes.length + bytes.length;
-
-    pngSequenceProgress = (i + 1) / totalFrames;
-    notifyModelState();
-  }
-
-  // Central directory: one 46-byte record per frame, pointing back at that
-  // frame's local header offset above — standard ZIP trailer layout.
-  const centralDirStart = offset;
-  for (const entry of centralDirectory) {
-    const central = new DataView(new ArrayBuffer(46));
-    central.setUint32(0, 0x02014b50, true); // central file header signature
-    central.setUint16(4, 20, true); // version made by
-    central.setUint16(6, 20, true); // version needed to extract
-    central.setUint16(8, 0, true); // general purpose bit flag
-    central.setUint16(10, 0, true); // compression method
-    central.setUint16(12, 0, true); // last mod file time
-    central.setUint16(14, 0, true); // last mod file date
-    central.setUint32(16, entry.crc, true);
-    central.setUint32(20, entry.size, true);
-    central.setUint32(24, entry.size, true);
-    central.setUint16(28, entry.nameBytes.length, true);
-    central.setUint16(30, 0, true); // extra field length
-    central.setUint16(32, 0, true); // file comment length
-    central.setUint16(34, 0, true); // disk number start
-    central.setUint16(36, 0, true); // internal file attributes
-    central.setUint32(38, 0, true); // external file attributes
-    central.setUint32(42, entry.offset, true); // relative offset of local header
-    parts.push(new Uint8Array(central.buffer), entry.nameBytes);
-    offset += 46 + entry.nameBytes.length;
-  }
-
-  const end = new DataView(new ArrayBuffer(22));
-  end.setUint32(0, 0x06054b50, true); // end of central directory signature
-  end.setUint16(4, 0, true); // number of this disk
-  end.setUint16(6, 0, true); // disk where central directory starts
-  end.setUint16(8, centralDirectory.length, true); // central directory records on this disk
-  end.setUint16(10, centralDirectory.length, true); // total central directory records
-  end.setUint32(12, offset - centralDirStart, true); // size of central directory
-  end.setUint32(16, centralDirStart, true); // offset of start of central directory
-  end.setUint16(20, 0, true); // comment length
-  parts.push(new Uint8Array(end.buffer));
-
-  const url = URL.createObjectURL(new Blob(parts, { type: 'application/zip' }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `bluprint-model-frames-${Date.now()}.zip`;
-  link.click();
-  URL.revokeObjectURL(url);
-
-  videoExportInProgress = false;
-  pngSequenceExporting = false;
-  // Same reasoning as captureVideo's onstop: ease back to the neutral framed
-  // angle now that advanceVideoTilt no longer owns cubeParallaxX/Y, so a
-  // retake starts clean.
-  resetCubeRotation();
-  applyCanvasSize();
-  renderCubeFrame();
-  notifyModelState();
-}
-
 function resize() {
-  // Set for the duration of both captureVideo() and capturePngSequence() —
-  // both render directly onto the live WebGL canvas at a fixed export
-  // resolution for their whole export. A real window resize mid-export would
-  // both change cubeProjectionHalfX/Y (and so the framing) partway through,
-  // and clobber that fixed canvas.width/height outright.
-  if (videoExportInProgress) return;
   // canvas.clientWidth/Height (the element's own actual CSS-rendered box),
   // not window.innerWidth/innerHeight — those two are usually the same, but
   // diverge on iOS Safari while the bottom URL bar auto-hides/shows during a
@@ -6983,12 +6703,6 @@ let overBudgetWindows = 0;
 let underBudgetWindows = 0;
 
 function updateDynamicRenderScale(avgFrameMs) {
-  // No explicit videoExportInProgress guard needed here: this is only ever
-  // reached via recordAndDisplayFrameTiming, which renderLoop stops calling
-  // entirely for the whole duration of a captureVideo()/capturePngSequence()
-  // export (see renderLoop's own check) — so by the time either export is
-  // forcing its own fixed canvas.width/height, this function simply isn't
-  // running at all to fight it.
   perfWindowCount++;
   if (perfWindowCount <= RENDER_SCALE_WARMUP_WINDOWS) return;
 
@@ -7091,14 +6805,6 @@ function renderLoop(now) {
     return;
   }
   setRenderLoopRunning(true);
-  if (videoRecording || pngSequenceExporting) {
-    // captureVideo()/capturePngSequence() own canvas.width/height and
-    // cubeParallaxX/Y exclusively for the whole export (see their own
-    // comments) — the ambient loop just idles rather than fighting either
-    // one, and picks back up on its own once the export flips this back off.
-    requestAnimationFrame(renderLoop);
-    return;
-  }
   renderCubeFrame();
   recordAndDisplayFrameTiming(now);
   requestAnimationFrame(renderLoop);
@@ -7182,8 +6888,8 @@ export const controls = {
       // Fixed across the page's lifetime (see IS_SCROLL_ROUTE's own
       // declaration) — read once here rather than threaded through
       // getModelState/notifyModelState, since it never changes after mount.
-      // Panel.tsx uses it to hide the photo/video mode indicator pills
-      // entirely on the /scroll route, where P/V are wired up to nothing.
+      // Panel.tsx uses it to hide the photo mode indicator pill
+      // entirely on the /scroll route, where P is wired up to nothing.
       isScrollRoute: IS_SCROLL_ROUTE,
       // Same "fixed across the page's lifetime" treatment — panel.tsx uses
       // this to keep the control panel permanently hidden with no H-key
@@ -7191,6 +6897,8 @@ export const controls = {
       isPreviewRoute: IS_PREVIEW_ROUTE,
       // Same again — panel.tsx only offers "Load NGEN battery" on /battery.
       isBatteryRoute: IS_BATTERY_ROUTE,
+      // panel.tsx hides the Camera Targets section on the root route.
+      isPlainRoute: IS_PLAIN_ROUTE,
       isSidewaysBattery: IS_SIDEWAYS_BATTERY,
       batteryCountMin: BATTERY_COUNT_MIN,
       batteryCountMax: BATTERY_COUNT_MAX,
@@ -7274,7 +6982,14 @@ export const controls = {
   setLightAzimuth,
   setLightElevation,
   setLightIntensityPercent,
-  setBlueprintEnabled,
+  setPhotoMode,
+  // Same capture the photo-mode Enter/Shift+P shortcut runs (resolution
+  // from the current photoExport2x toggle) — for the photo card's button.
+  capturePhoto: () => capturePhoto(photoExport2x ? PHOTO_EXPORT_MAX_DIMENSION_2X : PHOTO_EXPORT_MAX_DIMENSION),
+  // Pixel size a capture would come out at right now — follows the window's
+  // aspect ratio (see computeExportDimensions), so the panel re-reads it on
+  // resize. Shown next to the photo card's @2x toggle.
+  getPhotoExportSize: (is2x) => computeExportDimensions(is2x ? PHOTO_EXPORT_MAX_DIMENSION_2X : PHOTO_EXPORT_MAX_DIMENSION),
   setPhotoExport2x,
   setPhotoUniformLineWidth,
   setPhotoLineWidthHalfPx,

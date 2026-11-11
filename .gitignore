@@ -9,5 +9,3 @@ video/
 image/
 
 # Impeccable local session/cache state, not project source
-.impeccable/live/sessions/
-.impeccable/hook.cache.json

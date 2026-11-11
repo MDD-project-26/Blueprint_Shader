@@ -35,6 +35,7 @@ export default defineConfig({
       // data-preview="true", the same panel-free treatment as scroll-preview.
       input: {
         main: path.resolve(__dirname, "index.html"),
+        specto: path.resolve(__dirname, "specto.html"),
         scroll: path.resolve(__dirname, "scroll.html"),
         scrollPreview: path.resolve(__dirname, "scroll-preview.html"),
         scrollEmbed: path.resolve(__dirname, "scroll-embed.html"),

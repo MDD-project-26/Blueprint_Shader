@@ -321,8 +321,10 @@
     --muted-foreground: color-mix(in srgb, var(--color-gray-500) 90%, var(--color-white));
     --popover: color-mix(in srgb, var(--background) 98%, var(--color-white));
     --popover-foreground: var(--color-gray-100);
-    --primary: var(--color-gray-100);
-    --primary-foreground: var(--color-gray-800);
+    /* Pure white primary actions on the dark panels, black label — same
+       white/black pairing as the active photo mode pill. */
+    --primary: var(--color-white);
+    --primary-foreground: var(--color-black);
     --ring: var(--ngen-focus);
     --secondary: --alpha(var(--color-white) / 4%);
     --secondary-foreground: var(--color-gray-100);
@@ -609,6 +611,116 @@
     opacity   var(--panel-close-dur) var(--modal-ease),
     filter    var(--panel-close-dur) var(--modal-ease);
 }
+/* Presenter chrome that follows the panels' show/hide (H key) with the same
+   .t-panel motion tokens: the top-center FPS monitor and bottom-right axis
+   gizmo (#perf-monitor/#axis-gizmo, toggled by main.js setPanelsHidden) and
+   the bottom-right "H hides the panels" hint (panel.tsx). Uses the
+   individual translate/scale properties rather than transform, so it
+   composes with #perf-monitor's own translateX(-50%) centering. Top items
+   lift out upward, bottom items drop out downward — each exits toward its
+   own edge. */
+#perf-monitor,
+#axis-gizmo,
+.t-chrome {
+  transition:
+    translate var(--panel-open-dur) var(--modal-ease),
+    scale     var(--panel-open-dur) var(--modal-ease),
+    opacity   var(--panel-open-dur) var(--modal-ease),
+    filter    var(--panel-open-dur) var(--modal-ease);
+}
+#perf-monitor { transform-origin: top center; }
+#axis-gizmo,
+.t-chrome-bottom-right { transform-origin: bottom right; }
+#perf-monitor.is-panels-hidden,
+#axis-gizmo.is-panels-hidden,
+.t-chrome.is-panels-hidden {
+  translate: 0 -8px;
+  scale: var(--panel-close-scale);
+  opacity: 0;
+  filter: blur(var(--panel-blur));
+  transition:
+    translate var(--panel-close-dur) var(--modal-ease),
+    scale     var(--panel-close-dur) var(--modal-ease),
+    opacity   var(--panel-close-dur) var(--modal-ease),
+    filter    var(--panel-close-dur) var(--modal-ease);
+}
+#axis-gizmo.is-panels-hidden,
+.t-chrome-bottom-right.is-panels-hidden {
+  translate: 0 8px;
+}
+/* Floating control panel material (Apple "materials" guidance): a large
+   surface should read as a thick translucent layer — stronger blur plus
+   saturation so the canvas colour bleeds through instead of greying out, a
+   1px inset top highlight (light catching the edge), and a two-layer shadow
+   (tight contact + soft ambient) for depth over the busy canvas. Replaces
+   the old bg-popover/80 + backdrop-blur-sm (4px), which read flat for a
+   panel this size. */
+.panel-material {
+  background: color-mix(in oklab, var(--popover) 72%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  box-shadow:
+    inset 0 1px 0 0 --alpha(var(--color-white) / 8%),
+    0 1px 2px --alpha(var(--color-black) / 12%),
+    0 16px 40px -12px --alpha(var(--color-black) / 40%);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .panel-material {
+    background: var(--popover);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+@media (prefers-contrast: more) {
+  .panel-material {
+    background: var(--popover);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border-color: color-mix(in oklab, var(--popover-foreground) 40%, transparent);
+  }
+}
+
+/* Scroll edge effect: instead of content hard-clipping at the panel's
+   rounded edge, it fades out over 24px — but only on the side that actually
+   has more content (nothing fades at rest at the top, nothing at the
+   bottom once scrolled to the end, and a panel that doesn't scroll gets no
+   mask at all, since its scroll timeline is inactive). Driven by a
+   scroll-driven animation on registered custom properties; browsers without
+   animation-timeline just keep the hard clip. */
+@property --panel-fade-top {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --panel-fade-bottom {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes panel-scroll-edges {
+  0% { --panel-fade-top: 0px; --panel-fade-bottom: 24px; }
+  8% { --panel-fade-top: 24px; }
+  92% { --panel-fade-bottom: 24px; }
+  100% { --panel-fade-top: 24px; --panel-fade-bottom: 0px; }
+}
+@supports (animation-timeline: scroll()) {
+  .panel-scroll-edges {
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--panel-fade-top), #000 calc(100% - var(--panel-fade-bottom)), transparent 100%);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 var(--panel-fade-top), #000 calc(100% - var(--panel-fade-bottom)), transparent 100%);
+    animation: panel-scroll-edges linear both;
+    animation-timeline: scroll(self);
+  }
+}
+
+/* Segmented control (shader theme Dark/Light): one sliding thumb under the
+   selected segment rather than two independent filled/outline buttons, so
+   the choice reads as one control with one value. The thumb moves on the
+   panels' own ease; it's a discrete click, not a gesture, so a CSS
+   transition is enough (it still retargets from its current spot if
+   clicked again mid-slide). */
+.t-segmented-thumb {
+  transition: translate 220ms var(--modal-ease);
+}
 .t-panel-left {
   transform-origin: top left;
 }
@@ -643,32 +755,108 @@
     opacity             var(--modal-close-dur) var(--modal-ease);
 }
 
-/* Recording indicator dot (src/panel.tsx video-mode pill) — a soft opacity
-   pulse rather than a hard on/off blink, so it reads as "live" (Zoom/Slack-
-   style recording dot) without being visually jarring next to the pill's
-   own text. */
+/* Instructions guide (src/instructions-modal.tsx). Steps share one grid
+   cell; position decides where each rests. Transitions start from the live
+   value, so a quick Next-Next-Back reverses mid-flight instead of jumping. */
 :root {
-  --record-dot-blink-dur: 1200ms;
+  --guide-step-dur: 320ms;
+  --guide-step-shift: 20px;
+  --guide-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
-@keyframes record-dot-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.25; }
+.t-guide-step {
+  transition:
+    transform var(--guide-step-dur) var(--guide-ease),
+    opacity calc(var(--guide-step-dur) * 0.6) var(--guide-ease),
+    visibility 0s linear var(--guide-step-dur);
+  will-change: transform, opacity;
 }
-.t-record-dot {
-  animation: record-dot-blink var(--record-dot-blink-dur) ease-in-out infinite;
+.t-guide-step[data-position="current"] {
+  transform: none;
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s, 60ms, 0s;
+}
+.t-guide-step[data-position="before"] {
+  transform: translateX(calc(var(--guide-step-shift) * -1));
+  opacity: 0;
+  visibility: hidden;
+}
+.t-guide-step[data-position="after"] {
+  transform: translateX(var(--guide-step-shift));
+  opacity: 0;
+  visibility: hidden;
+}
+.t-guide-dot {
+  transition:
+    width var(--guide-step-dur) var(--guide-ease),
+    background-color 150ms ease-out;
+}
+/* Press feedback lands on pointer-down, not on release, and eases back
+   out on release instead of snapping. */
+.t-press {
+  transition:
+    transform 160ms ease-out,
+    box-shadow 150ms ease-out;
+}
+.t-press:active {
+  transform: scale(0.97);
+  transition: transform 100ms ease-out;
+}
+/* The card arrives as a material: blur clears as it scales in. */
+.t-guide-surface.t-modal {
+  filter: blur(6px);
+  transition:
+    transform var(--modal-open-dur) var(--modal-ease),
+    opacity var(--modal-open-dur) var(--modal-ease),
+    filter var(--modal-open-dur) var(--modal-ease);
+}
+.t-guide-surface.t-modal.is-open {
+  filter: none;
+}
+.t-guide-surface.t-modal.is-closing {
+  filter: blur(4px);
+  transition:
+    transform var(--modal-close-dur) var(--modal-ease),
+    opacity var(--modal-close-dur) var(--modal-ease),
+    filter var(--modal-close-dur) var(--modal-ease);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .t-guide-surface {
+    background-color: var(--popover);
+    backdrop-filter: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .t-overlay-backdrop,
   .t-modal,
   .t-panel,
+  #perf-monitor,
+  #axis-gizmo,
+  .t-chrome,
+  .t-segmented-thumb,
   .t-reveal,
   .t-fade-center {
     transition: none !important;
   }
-  .t-record-dot {
-    animation: none;
-    opacity: 1;
+  /* Guide: keep the crossfade that shows the step changed, drop the slide,
+     the blur and the press scale. */
+  .t-guide-step {
+    transform: none !important;
+    transition:
+      opacity 150ms ease-out,
+      visibility 0s linear 150ms !important;
+  }
+  .t-guide-step[data-position="current"] {
+    transition: opacity 150ms ease-out !important;
+  }
+  .t-guide-surface.t-modal {
+    filter: none !important;
+  }
+  .t-guide-dot,
+  .t-press:active {
+    transition: none !important;
+    transform: none !important;
   }
   /* Keep a quick opacity crossfade (it's what tells you the label actually
      changed) but drop the translateY slide and blur — movement and heavy

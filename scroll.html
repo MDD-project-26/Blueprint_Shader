@@ -79,8 +79,8 @@
     drag/pan/zoom, flow-arrow drawing, model upload, perf-monitor/axis-gizmo
     — none of it stripped) via the same /main.js and /src/main.tsx. The only
     difference is data-scroll="true" below: main.js reads that (as
-    IS_SCROLL_ROUTE) to drop photo/video mode (P/Escape/Shift+P/V/Enter/
-    Cmd+Enter are no-ops, and the panel hides those indicator pills), skip
+    IS_SCROLL_ROUTE) to drop photo mode (P/Escape/Shift+P/Enter are
+    no-ops, and the panel hides its indicator pill), skip
     loadBundledDefaultModel's opening camera move so the model appears
     already sitting on Camera Target 1, and — instead of scroll-wheel zoom —
     wires page scroll (see #scroll-track above) to smoothly step the camera
